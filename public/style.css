@@ -1,0 +1,201 @@
+/* ================= VARIABLES Y RESET (Igual que la App Móvil) ================= */
+:root {
+    --asphalt: #1C1D1F;
+    --panel: #26282B;
+    --panel-2: #302F2C;
+    --line: #3C3B37;
+    --ink: #EDEDE7;
+    --ink-dim: #9A9992;
+    --yellow: #F2B705;
+    --yellow-dim: #8a6d0e;
+    --orange: #E8590C;
+    --green: #4C9A4C;
+    --red: #C24141;
+    --plate-black: #141414;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--asphalt);
+    font-family: 'Inter', sans-serif;
+    color: var(--ink);
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ================= CABECERA TV ================= */
+header {
+    background: var(--panel);
+    padding: 20px 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 4px solid var(--yellow);
+}
+
+header h1 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 0;
+    color: var(--ink);
+}
+
+header h1 span {
+    color: var(--yellow);
+}
+
+.header-slogan {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink-dim);
+    text-align: right;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    line-height: 1.3;
+}
+
+/* ================= CONTENEDOR DE COLUMNAS ================= */
+.tv-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr 0.8fr; /* Proporción basada en tu boceto */
+    gap: 20px;
+    padding: 25px 30px;
+    height: calc(100vh - 95px);
+}
+
+.columna-tv {
+    background: var(--panel);
+    border: 2px solid var(--line);
+    border-radius: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+}
+
+.columna-tv h2 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 18px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--yellow);
+    padding: 18px 20px;
+    margin: 0;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+    text-align: center;
+}
+
+/* ================= LISTAS Y TARJETAS ================= */
+.lista-items {
+    list-style: none;
+    padding: 15px;
+    margin: 0;
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* 🔥 Aplicamos scroll suave y altura máxima controlada a los tres contenedores de la TV */
+#lista-mecanicos, 
+#lista-espera, 
+#lista-proceso {
+    max-height: calc(100vh - 180px);
+    overflow-y: auto;
+    padding-right: 5px;
+}
+
+/* Estilo para la barra de desplazamiento interna (Scroll estético en todas las columnas) */
+#lista-mecanicos::-webkit-scrollbar,
+#lista-espera::-webkit-scrollbar,
+#lista-proceso::-webkit-scrollbar {
+    width: 6px;
+}
+
+#lista-mecanicos::-webkit-scrollbar-thumb,
+#lista-espera::-webkit-scrollbar-thumb,
+#lista-proceso::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 4px;
+}
+
+.item-card {
+    background: var(--asphalt);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.2s ease;
+}
+
+.item-card.ocupado {
+    border-left: 5px solid var(--yellow);
+}
+
+.item-card.disponible {
+    border-left: 5px solid var(--green);
+}
+
+.item-titulo {
+    font-family: 'Oswald', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: 0.5px;
+}
+
+.item-sub {
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-top: 3px;
+    text-transform: uppercase;
+}
+
+/* Placa miniatura dentro de las tarjetas */
+.vehiculo-asignado {
+    margin-top: 6px;
+    font-size: 0.85rem;
+    color: var(--yellow);
+    background: var(--panel-2);
+    padding: 4px 8px;
+    border-radius: 6px;
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+}
+
+/* Badges de Estado */
+.badge-estado {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 10px;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.badge-libre {
+    background: rgba(76, 154, 76, 0.2);
+    color: #72ef72;
+    border: 1px solid var(--green);
+}
+
+.badge-ocupado {
+    background: rgba(242, 183, 5, 0.15);
+    color: var(--yellow);
+    border: 1px solid var(--yellow-dim);
+}

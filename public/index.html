@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frenos Pala - Turnero TV</title>
+    <!-- Fuentes idénticas a la App -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+    <!-- Estilos unificados -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <h1>Frenos <span>Pala</span></h1>
+        <div class="header-slogan">Estamos 24/7<br>para atenderte</div>
+    </header>
+
+    <div class="tv-container">
+        <!-- COLUMNA 1: MECÁNICOS EN TURNO -->
+        <div class="columna-tv">
+            <h2>Mecánicos En Turno</h2>
+            <ul id="lista-mecanicos" class="lista-items">
+                <!-- Se llena con JS -->
+            </ul>
+        </div>
+
+        <!-- COLUMNA 2: CARROS EN ESPERA -->
+        <div class="columna-tv">
+            <h2>Carros en Espera</h2>
+            <ul id="lista-espera" class="lista-items">
+                <!-- Se llena con JS -->
+            </ul>
+        </div>
+
+        <!-- COLUMNA 3: ALINEACIÓN Y REVISIÓN (GUAJE) -->
+        <div class="columna-tv">
+            <h2>Alineación y revisión</h2>
+            <ul id="lista-proceso" class="lista-items">
+                <!-- Se llena con JS -->
+            </ul>
+        </div>
+    </div>
+<!-- Importar Socket.io -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+<!-- Tu script de lógica visual -->
+<script src="tv.js"></script>
+</body>
+</html>

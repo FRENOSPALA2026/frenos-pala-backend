@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frenos Pala — App Recepción</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="mobile.css">
+    <!-- Librería para los gráficos -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<div class="phone">
+    <!-- ================= PANTALLA DE LOGIN ================= -->
+    <div id="loginScreen" class="login-overlay">
+        <div class="login-box">
+            <h2 style="color: white; font-family: 'Oswald', sans-serif; font-size: 2.2rem; margin-bottom: 5px; text-transform: uppercase;">Frenos <span style="color: var(--yellow);">Pala</span></h2>
+            <p style="color: #a1a1aa; margin-bottom: 25px; font-size: 0.9rem;">Selecciona tu rol para ingresar</p>
+            
+            <button class="btn-primary" id="btnRoleTornero" style="margin-bottom: 20px; background: #333; color: white; border: 1px solid #555;">Entrar como Tornero</button>
+            
+            <div style="border-top: 1px solid #333; padding-top: 20px;">
+                <input type="password" id="adminPin" placeholder="PIN (ej: 1234)" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #222; color: #fff; margin-bottom: 10px; text-align: center; letter-spacing: 4px; font-size: 1.2rem;">
+                <button class="btn-primary" id="btnRoleAdmin" style="background: var(--yellow); color: var(--ink);">Entrar como Administrador</button>
+                <div id="loginError" style="color: #ef4444; margin-top: 10px; font-size: 0.85rem; display: none; text-align: center;">⚠️ PIN incorrecto</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="topbar">
+        <div class="brand">Frenos <span>Pala</span></div>
+        <div class="shift">Estamos 24/7 <br>para atenderte</div>
+    </div>
+
+    <!-- PESTAÑA 1: INICIO -->
+    <div class="screen" id="tab-inicio">
+        <h2 class="section-title">Registrar ingreso</h2>
+        
+        <!-- AJUSTE DE PLACA PARA COLOMBIA (6 caracteres sin guion) -->
+        <div class="plate-input-wrap">
+            <div class="flag">CO</div>
+            <input id="plateInput" maxlength="6" placeholder="AAA123" autocomplete="off">
+        </div>
+        
+        <div class="chip-row" id="serviceChips">
+            <div class="chip active" data-service="frenos">Frenos</div>
+            <div class="chip" data-service="suspension">Suspensión</div>
+            <div class="chip" data-service="revision">Revisión</div>
+            <div class="chip" data-service="alineacion">Alineación</div>
+        </div>
+
+        <!-- SECCIÓN TURNO PREFERENCIAL -->
+        <div class="vip-row" style="margin: 15px 0;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; width: 100%;">
+                <input type="checkbox" id="checkPreferencial" style="width: 22px; height: 22px; cursor: pointer;">
+                <div class="vip-label" style="margin: 0;"><span class="star">★</span> Turno preferencial</div>
+            </label>
+        </div>
+        <select id="selectMecanicoPreferido" class="hidden" style="margin-bottom: 20px; width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #222; color: #fff; font-family: 'Inter', sans-serif; font-size: 1rem; outline: none;"></select>
+
+        <button class="btn-primary" id="btnRegistrar">Registrar</button>
+        <div class="toast" id="toastRegistro"></div>
+    </div>
+
+    <!-- PESTAÑA 2: FIN DE TRABAJO -->
+    <div class="screen hidden" id="tab-fin">
+        <h2 class="section-title">Mecánicos ocupados</h2>
+        <div id="mechOcupadosList"></div>
+        <button class="btn-primary" id="btnLiberar" disabled>Liberar</button>
+        <div class="toast" id="toastLiberar"></div>
+    </div>
+
+    <!-- PESTAÑA 3: PLANTILLA (Con edición) -->
+    <div class="screen hidden" id="tab-plantilla">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 class="section-title">Plantilla · 24/7</h2>
+            <button id="btnAñadirMecanico" class="btn-small">+ Añadir</button>
+        </div>
+        <div id="rosterList"></div>
+    </div>
+
+    <!-- PESTAÑA 4: INFORMES -->
+    <div class="screen hidden" id="tab-informes">
+        <h2 class="section-title" style="margin-bottom: 15px;">Informes</h2>
+        
+        <!-- Toggle superior estilo iOS -->
+        <div class="chart-toggle">
+            <button class="toggle-btn active" id="btnInformeGeneral">General</button>
+            <button class="toggle-btn" id="btnInformeMecanicos">Mecánicos</button>
+        </div>
+
+        <select id="selectMecanicoInforme" class="hidden chart-select"></select>
+
+        <!-- FILTROS DE TIEMPO -->
+        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <select id="selectFiltroTiempo" class="chart-select" style="margin-bottom: 0; flex: 1;">
+                <option value="siempre">Todo el tiempo</option>
+                <option value="hoy">Hoy</option>
+                <option value="semana">Esta semana</option>
+                <option value="mes">Este mes</option>
+                <option value="ano">Este año</option>
+                <option value="especifica">Fecha específica...</option>
+            </select>
+            
+            <input type="date" id="inputFechaEspecifica" class="chart-select hidden" style="margin-bottom: 0; flex: 1; padding-right: 5px;">
+        </div>
+
+        <div class="chart-container">
+            <canvas id="informeChart"></canvas>
+            <div class="chart-center-text" id="chartCenterText"></div>
+        </div>
+
+        <div id="leyendaInformes" class="chart-legend"></div>
+    </div>
+
+    <!-- BARRA DE NAVEGACIÓN INFERIOR -->
+    <div class="navbar">
+        <div class="navbtn active" data-tab="inicio">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>
+            Inicio
+        </div>
+        <div class="navbtn" data-tab="fin">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v16l16-8z"/></svg>
+            Fin
+        </div>
+        <div class="navbtn" data-tab="plantilla">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="3"/><path d="M4 21c0-4 3.5-6 8-6s8 2 8 6"/></svg>
+            Plantilla
+        </div>
+        <div class="navbtn" id="navInformesBtn" data-tab="informes">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            Informes
+        </div>
+    </div>
+
+    <!-- MODAL PARA AÑADIR/EDITAR MECÁNICO -->
+    <div id="modalMecanico" class="modal hidden">
+        <div class="modal-content">
+            <h3 id="modalTitle">Añadir Mecánico</h3>
+            <input type="hidden" id="modalId">
+            <input type="text" id="modalName" placeholder="Nombre del mecánico" class="modal-input">
+            
+            <p style="margin-top: 15px; margin-bottom: 5px; font-size: 0.9rem; color: #a1a1aa;">Habilidades:</p>
+            <div class="skills-grid">
+                <label><input type="checkbox" value="frenos" class="skill-cb"> Frenos</label>
+                <label><input type="checkbox" value="suspension" class="skill-cb"> Suspensión</label>
+                <label><input type="checkbox" value="revision" class="skill-cb"> Revisión</label> 
+                <label><input type="checkbox" value="alineacion" class="skill-cb"> Alineación</label>
+            </div>
+            
+            <div class="modal-actions">
+                <button id="btnCancelarModal" class="btn-cancelar">Cancelar</button>
+                <button id="btnGuardarModal" class="btn-guardar">Guardar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="mobile.js"></script>
+</body>
+</html>
