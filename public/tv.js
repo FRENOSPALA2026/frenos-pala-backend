@@ -190,8 +190,8 @@ function actualizarPantalla() {
 }
 
 actualizarPantalla();
-// Refresco de respaldo cada 3 segundos, por si se cae la conexión de socket
-setInterval(actualizarPantalla, 3000);
+// Refresco de respaldo cada 1 segundos, por si se cae la conexión de socket
+setInterval(actualizarPantalla, 1000);
 
 // Los navegadores no dejan reproducir sonido hasta que el usuario interactúe
 // con la página. Este aviso se quita con el primer clic y desbloquea el audio.
