@@ -310,4 +310,4 @@ function actualizarPantalla() {
 
 actualizarPantalla();
 // Refresco de respaldo cada 3 segundos, por si se cae la conexión de socket
-setInterval(actualizarPantalla, 3000);
+setInterval(actualizarPantalla, 1000);
