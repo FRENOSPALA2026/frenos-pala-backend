@@ -12,6 +12,11 @@ const API_URL = window.location.origin;
 const socket = io(API_URL);
 
 // Nombres bonitos para mostrar (la base de datos los guarda en minúscula)
+// Guardamos aquí la última respuesta del servidor. Así los cronómetros
+// pueden avanzar cada segundo sin volver a preguntar por la red.
+let ultimosMecanicos = [];
+let ultimosTurnos = [];
+
 const NOMBRE_SERVICIO = {
     frenos: 'Frenos',
     suspension: 'Suspensión',
@@ -172,7 +177,18 @@ async function cargarMecanicos() {
     try {
         const res = await fetch(`${API_URL}/mecanicos`);
         const mecanicos = await res.json();
+        if (Array.isArray(mecanicos)) ultimosMecanicos = mecanicos;
+        pintarMecanicos();
+    } catch (err) {
+        console.error('Error cargando mecánicos:', err);
+    }
+}
+
+function pintarMecanicos() {
+    try {
+        const mecanicos = ultimosMecanicos;
         const lista = document.getElementById('lista-mecanicos');
+        if (!lista) return;
 
         if (!Array.isArray(mecanicos) || mecanicos.length === 0) {
             lista.innerHTML = '<li style="justify-content:center; color:#94a3b8;">No hay mecánicos activos en turno</li>';
@@ -247,7 +263,16 @@ async function cargarEnEspera() {
     try {
         const res = await fetch(`${API_URL}/turnos/en-espera`);
         const turnos = await res.json();
+        if (Array.isArray(turnos)) ultimosTurnos = turnos;
+        pintarEnEspera();
+    } catch (err) {
+        console.error('Error cargando la fila de espera:', err);
+    }
+}
 
+function pintarEnEspera() {
+    try {
+        const turnos = ultimosTurnos;
         const listaEspera = document.getElementById('lista-espera');
         const listaFosa = document.getElementById('lista-proceso');
 
@@ -303,11 +328,28 @@ function crearTarjetaTurno(t, etiqueta, color, claseExtra) {
 }
 
 // ================= ARRANQUE =================
+// Pide datos nuevos al servidor
 function actualizarPantalla() {
     cargarMecanicos();
     cargarEnEspera();
 }
 
+// Vuelve a dibujar con los datos que YA tenemos, sin usar la red.
+// Sirve para que los cronómetros avancen suave segundo a segundo.
+function refrescarCronometros() {
+    pintarMecanicos();
+    pintarEnEspera();
+}
+
 actualizarPantalla();
-// Refresco de respaldo cada 3 segundos, por si se cae la conexión de socket
-setInterval(actualizarPantalla, 1000);
+
+// Los cambios de verdad (placa nueva, mecánico liberado) llegan al instante
+// por Socket.io. Estos dos intervalos son solo complementos:
+//
+//   - Cada 1 segundo: repintamos con los datos en memoria para que los
+//     cronómetros corran suave. No consume nada de red ni de base de datos.
+//
+//   - Cada 5 segundos: pedimos datos frescos al servidor, como respaldo
+//     por si la conexión en tiempo real se llegara a caer.
+setInterval(refrescarCronometros, 1000);
+setInterval(actualizarPantalla, 5000);
