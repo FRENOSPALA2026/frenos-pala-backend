@@ -97,6 +97,10 @@ app.put('/mecanicos/:id', async (req, res, next) => {
         const { nombre, sabe_frenos, sabe_suspension, sabe_aceite, sabe_revision, sabe_alineacion,
                 estado_asistencia, estado_trabajo } = req.body;
 
+        // Miramos cómo estaba ANTES, para saber si de verdad hubo un cambio
+        const previo = await pool.query('SELECT estado_asistencia FROM mecanicos WHERE id = $1', [id]);
+        const estadoAnterior = previo.rows[0] ? previo.rows[0].estado_asistencia : null;
+
         const r = await pool.query(
             `UPDATE mecanicos SET
                 nombre = COALESCE($1, nombre),
@@ -116,11 +120,15 @@ app.put('/mecanicos/:id', async (req, res, next) => {
 
         let mecanico = r.rows[0];
 
-        // Si vuelve a estar Activo y Disponible pero sin marca de tiempo
-        // (ej. salió de una pausa), empezamos a contar su espera desde ahora.
-        if (mecanico.estado_asistencia === 'ACTIVO' &&
-            mecanico.estado_trabajo === 'DISPONIBLE' &&
-            !mecanico.disponible_desde) {
+        // El cronómetro de espera se reinicia cuando el mecánico ENTRA a turno,
+        // es decir cuando pasa de Pausa/Inactivo a Activo. Si ya estaba Activo
+        // y el turnero vuelve a tocar "Activo", NO se reinicia: así nadie puede
+        // borrar el tiempo de espera de alguien para adelantarlo en la fila.
+        const acabaDeEntrarEnTurno =
+            mecanico.estado_asistencia === 'ACTIVO' && estadoAnterior !== 'ACTIVO';
+
+        if (mecanico.estado_trabajo === 'DISPONIBLE' &&
+            (acabaDeEntrarEnTurno || !mecanico.disponible_desde)) {
             const marcado = await pool.query(
                 `UPDATE mecanicos SET disponible_desde = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *`,
                 [id]
@@ -148,30 +156,67 @@ app.put('/mecanicos/:id', async (req, res, next) => {
     } catch (err) { next(err); }
 });
 
-// Si ya tiene historial no se borra (se perdería): se marca Inactivo
+// Elimina un mecánico DE VERDAD (ej. lo despidieron o fue un registro
+// de prueba). Sus turnos históricos NO se borran: se conservan la placa,
+// el servicio y las horas, pero quedan sin mecánico asociado.
+// Es una acción permanente, no se puede deshacer.
 app.delete('/mecanicos/:id', async (req, res, next) => {
+    const client = await pool.connect();
     try {
         const { id } = req.params;
-        const tiene = await pool.query(
-            'SELECT 1 FROM turnos WHERE mecanico_id = $1 OR mecanico_preferido_id = $1 LIMIT 1',
+
+        await client.query('BEGIN');
+
+        const existe = await client.query('SELECT * FROM mecanicos WHERE id = $1', [id]);
+        if (existe.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Mecánico no encontrado' });
+        }
+        const mecanico = existe.rows[0];
+
+        // Si está atendiendo un carro, ese turno vuelve a la fila de espera
+        // para que otro mecánico lo pueda tomar (si no, el carro se perdería).
+        const enProceso = await client.query(
+            `UPDATE turnos
+             SET estado_turno = 'EN_ESPERA', mecanico_id = NULL, hora_inicio = NULL
+             WHERE mecanico_id = $1 AND estado_turno = 'EN_PROCESO' RETURNING id`,
             [id]
         );
 
-        if (tiene.rows.length > 0) {
-            await pool.query(`UPDATE mecanicos SET estado_asistencia = 'INACTIVO' WHERE id = $1`, [id]);
-            avisarCambio();
-            return res.json({
-                eliminado: false,
-                mensaje: 'Este mecánico ya tiene turnos en su historial, se marcó como Inactivo en vez de borrarlo.'
-            });
+        // Sus turnos VIP pendientes pasan a la fila general
+        await client.query(
+            `UPDATE turnos
+             SET es_vip = FALSE, mecanico_preferido_id = NULL, nombre_mecanico_preferido = NULL
+             WHERE mecanico_preferido_id = $1 AND estado_turno = 'EN_ESPERA'`,
+            [id]
+        );
+
+        // Soltamos las referencias del historial para poder borrarlo
+        await client.query('UPDATE turnos SET mecanico_id = NULL WHERE mecanico_id = $1', [id]);
+        await client.query('UPDATE turnos SET mecanico_preferido_id = NULL WHERE mecanico_preferido_id = $1', [id]);
+
+        await client.query('DELETE FROM mecanicos WHERE id = $1', [id]);
+
+        await client.query('COMMIT');
+
+        // Si le quitamos un carro, buscamos quién más lo pueda atender
+        if (enProceso.rows.length > 0) {
+            const nuevas = await intentarAsignarDisponibles();
+            nuevas.forEach(avisarNuevaAsignacion);
         }
 
-        const borrado = await pool.query('DELETE FROM mecanicos WHERE id = $1 RETURNING *', [id]);
-        if (borrado.rows.length === 0) return res.status(404).json({ error: 'Mecánico no encontrado' });
-
         avisarCambio();
-        res.json({ eliminado: true, mecanico: borrado.rows[0] });
-    } catch (err) { next(err); }
+        res.json({
+            eliminado: true,
+            mecanico,
+            turnos_devueltos_a_la_fila: enProceso.rows.length
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        next(err);
+    } finally {
+        client.release();
+    }
 });
 
 // ==========================================
