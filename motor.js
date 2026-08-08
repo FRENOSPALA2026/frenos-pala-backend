@@ -1,18 +1,38 @@
 // ==========================================
 // MOTOR LÓGICO DE ASIGNACIÓN — Frenos Pala
 // ==========================================
-// El "cerebro" del sistema. Decide qué turno le toca a un mecánico apenas
-// queda disponible, en este orden de prioridad:
+// Decide qué turno le toca a un mecánico apenas queda disponible.
 //
+// REGLA CLAVE (servicios múltiples):
+//   Un vehículo puede necesitar varios servicios a la vez (ej. frenos +
+//   suspensión). Un mecánico solo puede tomarlo si sabe hacer TODOS.
+//   Si sabe solo uno de los dos, el sistema lo salta y busca al siguiente
+//   carro que sí pueda atender completo.
+//
+// ORDEN DE PRIORIDAD:
 //   1. Fila oculta VIP  -> ¿hay un cliente de confianza esperando por ÉL?
-//   2. Fila de la fosa  -> revisión / alineación (comparten infraestructura,
-//                          pero cada mecánico solo toma la que sabe hacer)
-//   3. Fila general     -> frenos / suspensión, FIFO con salto de habilidades
+//   2. Fila de la fosa  -> carros que necesitan revisión y/o alineación
+//                          (ocupan las plataformas, infraestructura única)
+//   3. Fila general     -> frenos, suspensión y cambio de aceite
 //
-// Corre dentro de una transacción con bloqueo de fila (FOR UPDATE / SKIP LOCKED)
+// Corre en una transacción con bloqueo de fila (FOR UPDATE / SKIP LOCKED)
 // para que dos liberaciones simultáneas nunca se roben el mismo turno.
 
 const pool = require('./db');
+
+// Servicios que se hacen sobre las plataformas (fila aislada)
+const SERVICIOS_FOSA = ['revision', 'alineacion'];
+
+// Lista de servicios que sabe hacer un mecánico
+function habilidadesDe(mecanico) {
+    const skills = [];
+    if (mecanico.sabe_frenos) skills.push('frenos');
+    if (mecanico.sabe_suspension) skills.push('suspension');
+    if (mecanico.sabe_aceite) skills.push('aceite');
+    if (mecanico.sabe_revision) skills.push('revision');
+    if (mecanico.sabe_alineacion) skills.push('alineacion');
+    return skills;
+}
 
 async function asignarSiguienteTurno(mecanicoId) {
     const client = await pool.connect();
@@ -35,9 +55,17 @@ async function asignarSiguienteTurno(mecanicoId) {
             return { asignado: false, motivo: 'El mecánico no está disponible' };
         }
 
+        const habilidades = habilidadesDe(mecanico);
+
+        if (habilidades.length === 0) {
+            await client.query('COMMIT');
+            return { asignado: false, motivo: 'El mecánico no tiene habilidades asignadas' };
+        }
+
         let turno = null;
 
-        // 1. Fila oculta VIP
+        // ---- 1. FILA OCULTA VIP ----
+        // El cliente pidió expresamente a este mecánico, así que va primero.
         let r = await client.query(
             `SELECT * FROM turnos
              WHERE estado_turno = 'EN_ESPERA' AND es_vip = TRUE AND mecanico_preferido_id = $1
@@ -46,39 +74,44 @@ async function asignarSiguienteTurno(mecanicoId) {
         );
         turno = r.rows[0];
 
-        // 2. Fila de la fosa (revisión / alineación)
-        const serviciosFosa = [];
-        if (mecanico.sabe_revision) serviciosFosa.push('revision');
-        if (mecanico.sabe_alineacion) serviciosFosa.push('alineacion');
-
-        if (!turno && serviciosFosa.length > 0) {
+        // ---- 2. FILA DE LA FOSA ----
+        // Carros que necesitan revisión y/o alineación (usan las plataformas).
+        //   &&  pregunta: "¿este carro tiene algún servicio de fosa?"
+        //   <@  pregunta: "¿el mecánico sabe hacer TODOS sus servicios?"
+        if (!turno) {
             r = await client.query(
                 `SELECT * FROM turnos
-                 WHERE estado_turno = 'EN_ESPERA' AND es_vip = FALSE AND tipo_servicio = ANY($1::text[])
+                 WHERE estado_turno = 'EN_ESPERA' AND es_vip = FALSE
+                   AND tipo_servicios && $1::text[]
+                   AND tipo_servicios <@ $2::text[]
                  ORDER BY hora_llegada ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
-                [serviciosFosa]
+                [SERVICIOS_FOSA, habilidades]
             );
             turno = r.rows[0];
         }
 
-        // 3. Fila general (frenos / suspensión), con salto de habilidades
-        const serviciosGenerales = [];
-        if (mecanico.sabe_frenos) serviciosGenerales.push('frenos');
-        if (mecanico.sabe_suspension) serviciosGenerales.push('suspension');
-
-        if (!turno && serviciosGenerales.length > 0) {
+        // ---- 3. FILA GENERAL ----
+        // Todo lo que NO toca las plataformas: frenos, suspensión, aceite.
+        // Igual que arriba: si el mecánico no sabe hacer todos los servicios
+        // del primer carro, el sistema lo salta y busca el siguiente.
+        if (!turno) {
             r = await client.query(
                 `SELECT * FROM turnos
-                 WHERE estado_turno = 'EN_ESPERA' AND es_vip = FALSE AND tipo_servicio = ANY($1::text[])
+                 WHERE estado_turno = 'EN_ESPERA' AND es_vip = FALSE
+                   AND NOT (tipo_servicios && $1::text[])
+                   AND tipo_servicios <@ $2::text[]
                  ORDER BY hora_llegada ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
-                [serviciosGenerales]
+                [SERVICIOS_FOSA, habilidades]
             );
             turno = r.rows[0];
         }
 
         if (!turno) {
             await client.query('COMMIT');
-            return { asignado: false, motivo: 'No hay turnos pendientes para su perfil' };
+            return {
+                asignado: false,
+                motivo: 'No hay turnos pendientes que este mecánico pueda atender completos'
+            };
         }
 
         const { rows: turnoRows } = await client.query(
@@ -113,4 +146,4 @@ async function intentarAsignarDisponibles() {
     return asignados;
 }
 
-module.exports = { asignarSiguienteTurno, intentarAsignarDisponibles };
+module.exports = { asignarSiguienteTurno, intentarAsignarDisponibles, habilidadesDe, SERVICIOS_FOSA };

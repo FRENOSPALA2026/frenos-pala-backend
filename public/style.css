@@ -199,3 +199,150 @@ header h1 span {
     color: var(--yellow);
     border: 1px solid var(--yellow-dim);
 }
+/* ============================================================
+   RESPONSIVE — CELULAR Y TABLET
+   La TV grande sigue igual (3 columnas). En pantallas pequeñas
+   reorganizamos para que se lea cómodo sin hacer zoom.
+   ============================================================ */
+
+/* ---------- TABLET / PANTALLA MEDIANA (hasta 1100px) ---------- */
+@media (max-width: 1100px) {
+    .tv-container {
+        /* Mecánicos ocupa toda la fila de arriba (es lo más importante),
+           las dos filas de espera se reparten abajo. */
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto;
+        height: auto;
+        min-height: calc(100vh - 95px);
+        padding: 18px;
+        gap: 16px;
+    }
+
+    .columna-tv:first-child {
+        grid-column: 1 / -1; /* la columna de mecánicos abarca el ancho completo */
+    }
+
+    #lista-mecanicos { max-height: 45vh; }
+    #lista-espera,
+    #lista-proceso  { max-height: 40vh; }
+
+    html, body { overflow-y: auto; height: auto; }
+}
+
+/* ---------- CELULAR (hasta 700px) ---------- */
+@media (max-width: 700px) {
+    html, body {
+        height: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    /* Cabecera más compacta, el eslogan estorba en pantalla chica */
+    header {
+        padding: 14px 16px;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+
+    header h1 { font-size: 22px; }
+
+    .header-slogan {
+        font-size: 10px;
+        letter-spacing: 1px;
+    }
+
+    /* Una sola columna: se lee de arriba a abajo, como cualquier app */
+    .tv-container {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 14px;
+        height: auto;
+        min-height: 0;
+    }
+
+    .columna-tv {
+        border-radius: 14px;
+        border-width: 1px;
+    }
+
+    /* El título de cada sección se queda pegado arriba mientras
+       haces scroll dentro de esa lista: siempre sabes qué estás viendo */
+    .columna-tv h2 {
+        font-size: 15px;
+        padding: 14px 16px;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        letter-spacing: 1px;
+    }
+
+    /* Sin scroll interno: cada lista crece y se hace scroll con la página.
+       En celular, dos scrolls anidados son incómodos. */
+    .lista-items {
+        padding: 12px;
+        gap: 10px;
+    }
+
+    #lista-mecanicos,
+    #lista-espera,
+    #lista-proceso {
+        max-height: none;
+        overflow-y: visible;
+        padding-right: 12px;
+    }
+
+    /* Tarjetas en vertical: el nombre arriba, el estado abajo.
+       Así los nombres largos no se aplastan contra el badge. */
+    .item-card {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: 10px;
+    }
+
+    .item-card > div:last-child {
+        text-align: left !important;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    /* En celular el cronómetro y el badge caben en la misma línea */
+    .item-card > div:last-child br { display: none; }
+
+    .item-titulo { font-size: 17px; line-height: 1.25; }
+    .item-sub    { font-size: 11px; }
+
+    .vehiculo-asignado {
+        font-size: 0.95rem;
+        padding: 5px 10px;
+    }
+
+    .badge-estado {
+        font-size: 10px;
+        padding: 5px 9px;
+    }
+}
+
+/* ---------- CELULAR MUY PEQUEÑO (hasta 380px) ---------- */
+@media (max-width: 380px) {
+    header h1 { font-size: 19px; }
+    .header-slogan { display: none; } /* gana espacio para lo importante */
+    .item-titulo { font-size: 16px; }
+    .tv-container { padding: 10px; }
+}
+
+/* ---------- TV GRANDE (desde 1600px) ----------
+   En un televisor de 32" visto desde lejos, todo más grande. */
+@media (min-width: 1600px) {
+    header h1 { font-size: 36px; }
+    .columna-tv h2 { font-size: 24px; }
+    .item-titulo { font-size: 24px; }
+    .item-sub { font-size: 15px; }
+    .badge-estado { font-size: 14px; padding: 8px 14px; }
+    .vehiculo-asignado { font-size: 1.1rem; }
+}

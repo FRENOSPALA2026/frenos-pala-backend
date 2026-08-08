@@ -15,9 +15,19 @@ const socket = io(API_URL);
 const NOMBRE_SERVICIO = {
     frenos: 'Frenos',
     suspension: 'Suspensión',
+    aceite: 'Cambio de aceite',
     revision: 'Revisión',
     alineacion: 'Alineación'
 };
+
+// Servicios que ocupan las plataformas (van a la columna de la fosa)
+const SERVICIOS_FOSA = ['revision', 'alineacion'];
+
+// Un turno puede necesitar varios servicios: los mostramos separados por " + "
+function textoServicios(lista) {
+    if (!Array.isArray(lista) || lista.length === 0) return 'General';
+    return lista.map(s => NOMBRE_SERVICIO[s] || s).join(' + ');
+}
 
 // ================= AUDIO: TIMBRE Y VOZ =================
 function playChime() {
@@ -108,7 +118,7 @@ async function cargarMecanicos() {
             let derechaHtml = '';
 
             if (ocupado && m.placa_actual) {
-                const servicio = NOMBRE_SERVICIO[m.tipo_servicio] || m.tipo_servicio || 'General';
+                const servicio = textoServicios(m.tipo_servicios);
                 infoDetalle = `<div class="vehiculo-asignado">🚗 <strong>${m.placa_actual}</strong> (${servicio})</div>`;
                 derechaHtml = `
                     <div style="text-align:right; font-family:monospace;">
@@ -140,8 +150,13 @@ async function cargarEnEspera() {
         if (!Array.isArray(turnos)) return;
 
         // Revisión y alineación van a la fosa; frenos y suspensión a la fila general
-        const turnosFosa = turnos.filter(t => t.tipo_servicio === 'revision' || t.tipo_servicio === 'alineacion');
-        const turnosGenerales = turnos.filter(t => t.tipo_servicio === 'frenos' || t.tipo_servicio === 'suspension');
+        // Si el carro necesita revisión o alineación, ocupa una plataforma:
+        // va a la columna de la fosa aunque también necesite otros servicios.
+        const usaFosa = t => Array.isArray(t.tipo_servicios)
+            && t.tipo_servicios.some(s => SERVICIOS_FOSA.includes(s));
+
+        const turnosFosa = turnos.filter(usaFosa);
+        const turnosGenerales = turnos.filter(t => !usaFosa(t));
 
         listaEspera.innerHTML = turnosGenerales.length === 0
             ? '<li style="justify-content:center; color:#94a3b8;">Sin carros en espera</li>'
@@ -166,7 +181,7 @@ function crearTarjetaTurno(t, etiqueta, color, claseExtra) {
     const li = document.createElement('li');
     li.className = `item-card ${claseExtra}`;
 
-    const servicio = NOMBRE_SERVICIO[t.tipo_servicio] || t.tipo_servicio;
+    const servicio = textoServicios(t.tipo_servicios);
     const textoVip = t.es_vip && t.nombre_mecanico_preferido
         ? `<span style="color:#fbbf24; font-weight:600; margin-left:6px;">(⭐ Con ${t.nombre_mecanico_preferido})</span>`
         : (t.es_vip ? '<span style="color:#fbbf24; font-weight:600; margin-left:6px;">⭐ VIP</span>' : '');
@@ -190,8 +205,8 @@ function actualizarPantalla() {
 }
 
 actualizarPantalla();
-// Refresco de respaldo cada 1 segundos, por si se cae la conexión de socket
-setInterval(actualizarPantalla, 1000);
+// Refresco de respaldo cada 3 segundos, por si se cae la conexión de socket
+setInterval(actualizarPantalla, 3000);
 
 // Los navegadores no dejan reproducir sonido hasta que el usuario interactúe
 // con la página. Este aviso se quita con el primer clic y desbloquea el audio.

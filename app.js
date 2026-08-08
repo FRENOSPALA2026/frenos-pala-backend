@@ -43,7 +43,7 @@ app.get('/mecanicos', async (req, res, next) => {
     try {
         const r = await pool.query(`
             SELECT m.*, t.id AS turno_actual_id, t.placa AS placa_actual,
-                   t.tipo_servicio, t.hora_inicio
+                   t.tipo_servicios, t.hora_inicio
             FROM mecanicos m
             LEFT JOIN turnos t ON m.id = t.mecanico_id AND t.estado_turno = 'EN_PROCESO'
             WHERE m.estado_asistencia = 'ACTIVO'
@@ -58,7 +58,7 @@ app.get('/mecanicos/todos', async (req, res, next) => {
     try {
         const r = await pool.query(`
             SELECT m.*, t.id AS turno_actual_id, t.placa AS placa_actual,
-                   t.tipo_servicio, t.hora_inicio
+                   t.tipo_servicios, t.hora_inicio
             FROM mecanicos m
             LEFT JOIN turnos t ON m.id = t.mecanico_id AND t.estado_turno = 'EN_PROCESO'
             ORDER BY m.nombre
@@ -78,13 +78,13 @@ app.get('/api/mecanicos/activos', async (req, res, next) => {
 
 app.post('/mecanicos', async (req, res, next) => {
     try {
-        const { nombre, sabe_frenos, sabe_suspension, sabe_revision, sabe_alineacion } = req.body;
+        const { nombre, sabe_frenos, sabe_suspension, sabe_aceite, sabe_revision, sabe_alineacion } = req.body;
         if (!nombre) return res.status(400).json({ error: 'nombre es obligatorio' });
 
         const r = await pool.query(
-            `INSERT INTO mecanicos (nombre, sabe_frenos, sabe_suspension, sabe_revision, sabe_alineacion)
-             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [nombre, !!sabe_frenos, !!sabe_suspension, !!sabe_revision, !!sabe_alineacion]
+            `INSERT INTO mecanicos (nombre, sabe_frenos, sabe_suspension, sabe_aceite, sabe_revision, sabe_alineacion)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+            [nombre, !!sabe_frenos, !!sabe_suspension, !!sabe_aceite, !!sabe_revision, !!sabe_alineacion]
         );
         avisarCambio();
         res.json(r.rows[0]);
@@ -94,7 +94,7 @@ app.post('/mecanicos', async (req, res, next) => {
 app.put('/mecanicos/:id', async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { nombre, sabe_frenos, sabe_suspension, sabe_revision, sabe_alineacion,
+        const { nombre, sabe_frenos, sabe_suspension, sabe_aceite, sabe_revision, sabe_alineacion,
                 estado_asistencia, estado_trabajo } = req.body;
 
         const r = await pool.query(
@@ -102,12 +102,13 @@ app.put('/mecanicos/:id', async (req, res, next) => {
                 nombre = COALESCE($1, nombre),
                 sabe_frenos = COALESCE($2, sabe_frenos),
                 sabe_suspension = COALESCE($3, sabe_suspension),
-                sabe_revision = COALESCE($4, sabe_revision),
-                sabe_alineacion = COALESCE($5, sabe_alineacion),
-                estado_asistencia = COALESCE($6, estado_asistencia),
-                estado_trabajo = COALESCE($7, estado_trabajo)
-             WHERE id = $8 RETURNING *`,
-            [nombre, sabe_frenos, sabe_suspension, sabe_revision, sabe_alineacion,
+                sabe_aceite = COALESCE($4, sabe_aceite),
+                sabe_revision = COALESCE($5, sabe_revision),
+                sabe_alineacion = COALESCE($6, sabe_alineacion),
+                estado_asistencia = COALESCE($7, estado_asistencia),
+                estado_trabajo = COALESCE($8, estado_trabajo)
+             WHERE id = $9 RETURNING *`,
+            [nombre, sabe_frenos, sabe_suspension, sabe_aceite, sabe_revision, sabe_alineacion,
              estado_asistencia, estado_trabajo, id]
         );
 
@@ -160,19 +161,35 @@ app.delete('/mecanicos/:id', async (req, res, next) => {
 
 app.post('/turnos', async (req, res, next) => {
     try {
-        const { placa, tipo_servicio, es_vip, mecanico_preferido_id, nombre_mecanico_preferido } = req.body;
+        const { placa, tipo_servicios, tipo_servicio, es_vip,
+                mecanico_preferido_id, nombre_mecanico_preferido } = req.body;
 
-        if (!placa || !tipo_servicio) {
-            return res.status(400).json({ error: 'placa y tipo_servicio son obligatorios' });
+        // Aceptamos tanto la lista nueva (tipo_servicios) como el formato
+        // viejo de un solo servicio (tipo_servicio), por compatibilidad.
+        let servicios = tipo_servicios;
+        if (!servicios && tipo_servicio) servicios = [tipo_servicio];
+
+        if (!placa || !Array.isArray(servicios) || servicios.length === 0) {
+            return res.status(400).json({ error: 'placa y al menos un servicio son obligatorios' });
         }
+
+        // Normalizamos a minúscula y quitamos repetidos
+        servicios = [...new Set(servicios.map(s => String(s).toLowerCase().trim()))];
+
+        const VALIDOS = ['frenos', 'suspension', 'aceite', 'revision', 'alineacion'];
+        const invalidos = servicios.filter(s => !VALIDOS.includes(s));
+        if (invalidos.length > 0) {
+            return res.status(400).json({ error: `Servicio no reconocido: ${invalidos.join(', ')}` });
+        }
+
         if (es_vip && !mecanico_preferido_id) {
             return res.status(400).json({ error: 'Un turno VIP necesita mecanico_preferido_id' });
         }
 
         const r = await pool.query(
-            `INSERT INTO turnos (placa, tipo_servicio, es_vip, mecanico_preferido_id, nombre_mecanico_preferido)
-             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [placa, tipo_servicio, !!es_vip,
+            `INSERT INTO turnos (placa, tipo_servicios, es_vip, mecanico_preferido_id, nombre_mecanico_preferido)
+             VALUES ($1, $2::text[], $3, $4, $5) RETURNING *`,
+            [placa, servicios, !!es_vip,
              es_vip ? mecanico_preferido_id : null,
              es_vip ? nombre_mecanico_preferido : null]
         );
@@ -276,8 +293,11 @@ app.get('/api/informes', async (req, res, next) => {
     try {
         const { filtroTiempo, fechaEspecifica, mecanicoId } = req.query;
 
-        // OJO: la columna real es hora_llegada, no "fecha" (ese era el bug anterior)
-        let query = `SELECT tipo_servicio, COUNT(*) AS cantidad FROM turnos WHERE 1=1`;
+        // Como un turno puede tener varios servicios, "desarmamos" la lista
+        // con unnest: un carro de frenos+suspensión cuenta 1 en cada uno.
+        let query = `SELECT s AS tipo_servicio, COUNT(*) AS cantidad
+                     FROM turnos, unnest(tipo_servicios) AS s
+                     WHERE 1=1`;
         const values = [];
         let i = 1;
 
@@ -299,11 +319,11 @@ app.get('/api/informes', async (req, res, next) => {
             values.push(mecanicoId);
         }
 
-        query += ` GROUP BY tipo_servicio`;
+        query += ` GROUP BY s`;
 
         const r = await pool.query(query, values);
 
-        const stats = { frenos: 0, suspension: 0, revision: 0, alineacion: 0 };
+        const stats = { frenos: 0, suspension: 0, aceite: 0, revision: 0, alineacion: 0 };
         r.rows.forEach(row => {
             if (stats[row.tipo_servicio] !== undefined) stats[row.tipo_servicio] = parseInt(row.cantidad, 10);
         });
