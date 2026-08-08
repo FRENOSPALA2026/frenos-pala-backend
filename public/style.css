@@ -346,3 +346,57 @@ header h1 span {
     .badge-estado { font-size: 14px; padding: 8px 14px; }
     .vehiculo-asignado { font-size: 1.1rem; }
 }
+
+
+/* ============================================================
+   AVISO PARA ACTIVAR EL SONIDO
+   Se muestra al abrir la TV y desaparece con el primer toque.
+   ============================================================ */
+#aviso-audio {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(28, 29, 31, 0.94);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.aviso-caja {
+    text-align: center;
+    padding: 40px 60px;
+    border: 3px solid var(--yellow);
+    border-radius: 20px;
+    background: var(--panel);
+    animation: latido 2s ease-in-out infinite;
+}
+
+.aviso-icono { font-size: 64px; margin-bottom: 16px; }
+
+.aviso-texto {
+    font-family: 'Oswald', sans-serif;
+    font-size: 30px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--yellow);
+}
+
+.aviso-sub {
+    font-size: 15px;
+    color: var(--ink-dim);
+    margin-top: 10px;
+}
+
+@keyframes latido {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.04); }
+}
+
+@media (max-width: 700px) {
+    .aviso-caja { padding: 30px 28px; margin: 0 20px; }
+    .aviso-icono { font-size: 48px; }
+    .aviso-texto { font-size: 22px; }
+    .aviso-sub { font-size: 13px; }
+}

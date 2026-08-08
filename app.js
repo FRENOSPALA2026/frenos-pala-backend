@@ -115,6 +115,25 @@ app.put('/mecanicos/:id', async (req, res, next) => {
         if (r.rows.length === 0) return res.status(404).json({ error: 'Mecánico no encontrado' });
 
         let mecanico = r.rows[0];
+
+        // Si vuelve a estar Activo y Disponible pero sin marca de tiempo
+        // (ej. salió de una pausa), empezamos a contar su espera desde ahora.
+        if (mecanico.estado_asistencia === 'ACTIVO' &&
+            mecanico.estado_trabajo === 'DISPONIBLE' &&
+            !mecanico.disponible_desde) {
+            const marcado = await pool.query(
+                `UPDATE mecanicos SET disponible_desde = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *`,
+                [id]
+            );
+            mecanico = marcado.rows[0];
+        }
+
+        // Si pasa a Pausa o Inactivo, deja de contar
+        if (mecanico.estado_asistencia !== 'ACTIVO' && mecanico.disponible_desde) {
+            await pool.query(`UPDATE mecanicos SET disponible_desde = NULL WHERE id = $1`, [id]);
+            mecanico.disponible_desde = null;
+        }
+
         let asignacion = { asignado: false };
 
         // Si quedó Activo + Disponible (ej. salió de Pausa), le damos el siguiente turno
@@ -254,7 +273,10 @@ async function finalizarTurnoPorId(id) {
 
     let siguiente = { asignado: false };
     if (mecanico_id) {
-        await pool.query(`UPDATE mecanicos SET estado_trabajo = 'DISPONIBLE' WHERE id = $1`, [mecanico_id]);
+        await pool.query(
+            `UPDATE mecanicos SET estado_trabajo = 'DISPONIBLE', disponible_desde = CURRENT_TIMESTAMP WHERE id = $1`,
+            [mecanico_id]
+        );
         siguiente = await asignarSiguienteTurno(mecanico_id);
     }
 
@@ -331,6 +353,32 @@ app.get('/api/informes', async (req, res, next) => {
         res.json(stats);
     } catch (err) { next(err); }
 });
+
+// ==========================================
+// MANTENER DESPIERTO EL SERVIDOR (Render gratuito)
+// ==========================================
+// Render apaga el servicio tras ~15 min sin peticiones. Este endpoint es
+// liviano (no toca la base de datos) y sirve para que algo externo lo llame
+// cada pocos minutos y el servidor no se duerma.
+app.get('/ping', (req, res) => {
+    res.json({ ok: true, hora: new Date().toISOString() });
+});
+
+// Auto-ping: el servidor se llama a sí mismo cada 10 minutos.
+// OJO: esto solo funciona MIENTRAS el servidor esté despierto. Si llega a
+// dormirse (por un despliegue, un reinicio o un corte), nada lo despierta
+// desde adentro. Por eso conviene además un servicio externo de monitoreo
+// (ver README). Se activa poniendo la variable de entorno RENDER_EXTERNAL_URL,
+// que Render define automáticamente.
+const URL_PROPIA = process.env.RENDER_EXTERNAL_URL;
+if (URL_PROPIA) {
+    setInterval(() => {
+        fetch(`${URL_PROPIA}/ping`)
+            .then(() => console.log('💓 Auto-ping enviado'))
+            .catch(err => console.log('⚠️ Auto-ping falló:', err.message));
+    }, 10 * 60 * 1000); // cada 10 minutos
+    console.log(`💓 Auto-ping activado hacia ${URL_PROPIA}`);
+}
 
 // Manejo centralizado de errores
 app.use((err, req, res, next) => {

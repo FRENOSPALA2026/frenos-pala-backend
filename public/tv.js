@@ -30,41 +30,120 @@ function textoServicios(lista) {
 }
 
 // ================= AUDIO: TIMBRE Y VOZ =================
-function playChime() {
+// Los navegadores BLOQUEAN todo sonido hasta que la persona interactúa
+// con la página al menos una vez. Por eso mostramos un aviso grande que,
+// al tocarlo, desbloquea el audio para el resto del día.
+
+let audioListo = false;
+let ctxAudio = null;
+let vozEspanol = null;
+
+// Chrome carga las voces de forma asíncrona: hay que esperarlas.
+function buscarVoz() {
+    const voces = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    if (!voces || voces.length === 0) return;
+    // Preferimos una voz en español; si no hay, usamos la primera disponible.
+    vozEspanol = voces.find(v => v.lang && v.lang.toLowerCase().startsWith('es'))
+              || voces[0];
+    console.log('🔊 Voz seleccionada:', vozEspanol ? vozEspanol.name : 'ninguna');
+}
+if (window.speechSynthesis) {
+    buscarVoz();
+    window.speechSynthesis.onvoiceschanged = buscarVoz;
+}
+
+function activarAudio() {
+    if (audioListo) return;
     try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctxAudio = new (window.AudioContext || window.webkitAudioContext)();
+        if (ctxAudio.state === 'suspended') ctxAudio.resume();
+
+        // Un "enunciado vacío" desbloquea la síntesis de voz en Chrome
+        if (window.speechSynthesis) {
+            const vacio = new SpeechSynthesisUtterance(' ');
+            vacio.volume = 0;
+            window.speechSynthesis.speak(vacio);
+        }
+
+        audioListo = true;
+        const aviso = document.getElementById('aviso-audio');
+        if (aviso) aviso.style.display = 'none';
+        playChime();
+        console.log('🔊 Audio activado');
+    } catch (e) {
+        console.error('No se pudo activar el audio:', e);
+    }
+}
+
+function playChime() {
+    if (!ctxAudio) return;
+    try {
+        if (ctxAudio.state === 'suspended') ctxAudio.resume();
         [880, 1320].forEach((f, i) => {
-            const o = ctx.createOscillator();
-            const g = ctx.createGain();
+            const o = ctxAudio.createOscillator();
+            const g = ctxAudio.createGain();
             o.frequency.value = f;
             o.connect(g);
-            g.connect(ctx.destination);
-            g.gain.setValueAtTime(0.001, ctx.currentTime + i * 0.15);
-            g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + i * 0.15 + 0.02);
-            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.15 + 0.3);
-            o.start(ctx.currentTime + i * 0.15);
-            o.stop(ctx.currentTime + i * 0.15 + 0.32);
+            g.connect(ctxAudio.destination);
+            const t = ctxAudio.currentTime + i * 0.15;
+            g.gain.setValueAtTime(0.001, t);
+            g.gain.exponentialRampToValueAtTime(0.3, t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+            o.start(t);
+            o.stop(t + 0.37);
         });
     } catch (e) {
-        // Los navegadores bloquean el audio hasta que alguien haga clic
-        // en la pantalla al menos una vez. Ver el aviso de abajo.
+        console.error('Error con el timbre:', e);
     }
 }
 
 function announce(nombreMecanico, placa) {
+    if (!audioListo) {
+        console.warn('⚠️ Audio no activado: toca la pantalla para habilitarlo.');
+        const aviso = document.getElementById('aviso-audio');
+        if (aviso) aviso.style.display = 'flex';
+        return;
+    }
+
     playChime();
+
     setTimeout(() => {
         try {
-            const texto = `Mecánico ${nombreMecanico}, iniciar trabajo en placa ${placa.split('').join(' ')}`;
-            const u = new SpeechSynthesisUtterance(texto);
-            u.lang = 'es-CO';
-            u.rate = 0.95;
+            if (!window.speechSynthesis) return;
+            if (!vozEspanol) buscarVoz();
+
+            // Solo el primer nombre y apellido: los nombres completos son
+            // muy largos y el anuncio se vuelve eterno con el ruido del taller.
+            const partes = String(nombreMecanico).trim().split(/\s+/);
+            const nombreCorto = partes.slice(0, 2).join(' ');
+
+            // Deletreamos la placa para que se entienda entre el ruido
+            const placaDeletreada = String(placa).split('').join(' ');
+
+            const u = new SpeechSynthesisUtterance(
+                `Mecánico ${nombreCorto}, iniciar trabajo en placa ${placaDeletreada}`
+            );
+            if (vozEspanol) u.voice = vozEspanol;
+            u.lang = 'es-ES';
+            u.rate = 0.9;
+            u.volume = 1;
+
+            u.onerror = (e) => console.error('Error de voz:', e.error);
+
+            // Cancelamos cualquier anuncio pendiente para que no se encimen
+            window.speechSynthesis.cancel();
             window.speechSynthesis.speak(u);
-        } catch (e) { /* este navegador no soporta voz */ }
-    }, 900);
+        } catch (e) {
+            console.error('No se pudo anunciar por voz:', e);
+        }
+    }, 1000);
 }
 
-// ================= TIEMPO REAL =================
+// Cualquier toque o tecla en la pantalla activa el audio
+['click', 'touchstart', 'keydown'].forEach(evento => {
+    document.addEventListener(evento, activarAudio, { once: false });
+});
+
 socket.on('connect', () => console.log('🟢 TV conectada al servidor'));
 socket.on('disconnect', () => console.log('🔴 TV desconectada, reintentando...'));
 
@@ -100,11 +179,28 @@ async function cargarMecanicos() {
             return;
         }
 
-        // Primero los ocupados (que es lo que interesa ver), luego los libres
+        // ORDEN DE LA COLUMNA:
+        //   1º Los DISPONIBLES, del que lleva MÁS tiempo esperando al que
+        //      lleva menos. Así el siguiente en recibir carro sale de primero
+        //      y se ve de un vistazo quién lleva más rato sin trabajo.
+        //   2º Los OCUPADOS, del que acaba de empezar al que lleva más rato.
         mecanicos.sort((a, b) => {
-            const aOcupado = a.estado_trabajo === 'OCUPADO' ? 0 : 1;
-            const bOcupado = b.estado_trabajo === 'OCUPADO' ? 0 : 1;
-            return aOcupado - bOcupado;
+            const aLibre = a.estado_trabajo === 'DISPONIBLE';
+            const bLibre = b.estado_trabajo === 'DISPONIBLE';
+
+            if (aLibre !== bLibre) return aLibre ? -1 : 1; // libres arriba
+
+            if (aLibre) {
+                // Más tiempo esperando primero = fecha más antigua primero
+                const ta = a.disponible_desde ? new Date(a.disponible_desde).getTime() : Infinity;
+                const tb = b.disponible_desde ? new Date(b.disponible_desde).getTime() : Infinity;
+                return ta - tb;
+            }
+
+            // Ocupados: menos tiempo trabajando primero = empezó hace poco
+            const ia = a.hora_inicio ? new Date(a.hora_inicio).getTime() : 0;
+            const ib = b.hora_inicio ? new Date(b.hora_inicio).getTime() : 0;
+            return ib - ia;
         });
 
         lista.innerHTML = '';
@@ -126,8 +222,16 @@ async function cargarMecanicos() {
                         <span style="font-size:1.1rem; font-weight:bold; color:#eab308;">⏱️ ${formatearCronometro(m.hora_inicio)}</span>
                     </div>`;
             } else {
+                // Cuánto lleva esperando sin carro
+                const espera = m.disponible_desde
+                    ? formatearCronometro(m.disponible_desde)
+                    : '--:--';
                 infoDetalle = `<div class="item-sub" style="color:#4ade80; margin-top:4px;">Listo para asignar</div>`;
-                derechaHtml = `<span class="badge-estado badge-libre">DISPONIBLE</span>`;
+                derechaHtml = `
+                    <div style="text-align:right; font-family:monospace;">
+                        <span class="badge-estado badge-libre" style="display:inline-block; margin-bottom:4px;">Disponible</span><br>
+                        <span style="font-size:1.1rem; font-weight:bold; color:#4ade80;">⏳ ${espera}</span>
+                    </div>`;
             }
 
             li.innerHTML = `<div><div class="item-titulo">${m.nombre}</div>${infoDetalle}</div>${derechaHtml}`;
@@ -207,10 +311,3 @@ function actualizarPantalla() {
 actualizarPantalla();
 // Refresco de respaldo cada 3 segundos, por si se cae la conexión de socket
 setInterval(actualizarPantalla, 3000);
-
-// Los navegadores no dejan reproducir sonido hasta que el usuario interactúe
-// con la página. Este aviso se quita con el primer clic y desbloquea el audio.
-document.addEventListener('click', function desbloquear() {
-    playChime();
-    document.removeEventListener('click', desbloquear);
-}, { once: true });

@@ -121,7 +121,11 @@ async function asignarSiguienteTurno(mecanicoId) {
             [mecanicoId, turno.id]
         );
 
-        await client.query(`UPDATE mecanicos SET estado_trabajo = 'OCUPADO' WHERE id = $1`, [mecanicoId]);
+        // Al quedar ocupado ya no está esperando: limpiamos disponible_desde
+        await client.query(
+            `UPDATE mecanicos SET estado_trabajo = 'OCUPADO', disponible_desde = NULL WHERE id = $1`,
+            [mecanicoId]
+        );
 
         await client.query('COMMIT');
         return { asignado: true, turno: turnoRows[0], mecanico };
