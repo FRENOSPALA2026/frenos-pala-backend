@@ -176,9 +176,24 @@ socket.on('actualizar_tv', () => actualizarPantalla());
 function formatearCronometro(timestamp) {
     if (!timestamp) return '00:00';
     let segundos = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
+
+    // Protección: si el dato viene mal (fecha futura o algún desfase de
+    // zona horaria), mostramos 00:00 en vez de un número sin sentido.
     if (segundos < 0 || isNaN(segundos)) segundos = 0;
-    const minutos = Math.floor(segundos / 60);
+
+    // Más de 24 horas seguidas no es un dato creíble en un taller:
+    // seguramente hay un problema con la fecha guardada.
+    if (segundos > 86400) return '--:--';
+
+    const horas = Math.floor(segundos / 3600);
+    const minutos = Math.floor((segundos % 3600) / 60);
     const resto = segundos % 60;
+
+    // A partir de una hora mostramos H:MM:SS, que se lee mejor que
+    // "125:30" minutos corridos.
+    if (horas > 0) {
+        return `${horas}:${String(minutos).padStart(2, '0')}:${String(resto).padStart(2, '0')}`;
+    }
     return `${String(minutos).padStart(2, '0')}:${String(resto).padStart(2, '0')}`;
 }
 

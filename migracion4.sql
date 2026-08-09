@@ -5,22 +5,21 @@
 -- ============================================================
 
 -- ------------------------------------------------------------
--- 1. ZONA HORARIA DE LA BASE DE DATOS
---    La base guarda las horas en UTC. Colombia está 5 horas atrás,
---    así que un carro que entra a las 8:00 PM del 8 de agosto quedaba
---    registrado como del 9 de agosto, y no aparecía en el informe "hoy".
---    Con esto la base pasa a trabajar en hora de Colombia.
+-- 1. ZONA HORARIA
+--    La base debe quedarse en UTC. El backend convierte a hora de
+--    Colombia al generar los informes.
+--
+--    (En una versión anterior este archivo cambiaba la zona de la base
+--    a 'America/Bogota'. Era un error: hacía que los cronómetros
+--    mostraran 5 horas de más. Si ya lo ejecutaste así, corre
+--    migracion6.sql para dejarlo bien.)
 -- ------------------------------------------------------------
 DO $$
 DECLARE db TEXT;
 BEGIN
     SELECT current_database() INTO db;
-    EXECUTE format('ALTER DATABASE %I SET timezone TO ''America/Bogota''', db);
+    EXECUTE format('ALTER DATABASE %I SET timezone TO ''UTC''', db);
 END $$;
-
--- Nota: el cambio de arriba aplica a conexiones NUEVAS. Además, el backend
--- ya convierte explícitamente a hora de Colombia en los informes, así que
--- los reportes salen correctos aunque esto no alcance a aplicarse.
 
 -- ------------------------------------------------------------
 -- 2. TURNOS CANCELADOS

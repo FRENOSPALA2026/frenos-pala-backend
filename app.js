@@ -1,3 +1,8 @@
+// El servidor SIEMPRE trabaja en UTC. La conversión a hora de Colombia
+// se hace solo al generar informes. Sin esta línea, correr el servidor
+// en un computador de Colombia desfasaría todos los cronómetros 5 horas.
+process.env.TZ = 'UTC';
+
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
@@ -724,10 +729,16 @@ app.get('/api/informes/tiempo-activo', async (req, res, next) => {
                    m.nombre,
                    m.estado_asistencia,
                    COALESCE(SUM(
-                       EXTRACT(EPOCH FROM (
-                           LEAST(COALESCE(s.fin, CURRENT_TIMESTAMP), ${hastaUTC})
-                         - GREATEST(s.inicio, ${desdeUTC})
-                       ))
+                       -- OJO: en PostgreSQL, GREATEST y LEAST IGNORAN los
+                       -- valores nulos en vez de devolver nulo. Sin este
+                       -- CASE, un mecánico sin sesiones registradas hacía
+                       -- que se calculara desde 1970 hasta hoy (56 años).
+                       CASE WHEN s.id IS NULL THEN 0
+                            ELSE GREATEST(0, EXTRACT(EPOCH FROM (
+                                     LEAST(COALESCE(s.fin, CURRENT_TIMESTAMP), ${hastaUTC})
+                                   - GREATEST(s.inicio, ${desdeUTC})
+                                 )))
+                       END
                    ), 0) AS segundos_activo,
                    COUNT(s.id) FILTER (WHERE s.id IS NOT NULL) AS tramos
             FROM mecanicos m
