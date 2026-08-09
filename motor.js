@@ -19,6 +19,7 @@
 // para que dos liberaciones simultáneas nunca se roben el mismo turno.
 
 const pool = require('./db');
+const { registrar } = require('./auditoria');
 
 // Servicios que se hacen sobre las plataformas (fila aislada)
 const SERVICIOS_FOSA = ['revision', 'alineacion'];
@@ -128,6 +129,23 @@ async function asignarSiguienteTurno(mecanicoId) {
         );
 
         await client.query('COMMIT');
+
+        // Dejamos constancia de por qué este carro fue para este mecánico.
+        // Es la evidencia que permite responder si alguien reclama.
+        const via = turnoRows[0].es_vip ? 'turno preferencial'
+                  : (turnoRows[0].tipo_servicios || []).some(x => SERVICIOS_FOSA.includes(x))
+                      ? 'fila de plataformas'
+                      : 'fila general';
+        registrar({
+            accion: 'ASIGNAR',
+            detalle: `${mecanico.nombre} recibió ${turnoRows[0].placa} por ${via}`,
+            usuario: 'sistema',
+            placa: turnoRows[0].placa,
+            mecanicoId: mecanico.id,
+            turnoId: turnoRows[0].id,
+            datos: { via, servicios: turnoRows[0].tipo_servicios }
+        });
+
         return { asignado: true, turno: turnoRows[0], mecanico };
     } catch (err) {
         await client.query('ROLLBACK');

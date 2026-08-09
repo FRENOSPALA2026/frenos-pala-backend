@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frenos Pala — Turno de tu vehículo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --asphalt:#1C1D1F; --panel:#26282B; --panel-2:#302F2C; --line:#3C3B37;
+    --ink:#EDEDE7; --ink-dim:#9A9992; --yellow:#F2B705; --green:#4ADE80;
+    --orange:#FB923C; --plate-black:#141414;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--asphalt);color:var(--ink);
+            font-family:'Inter',sans-serif;min-height:100vh;}
+
+  header{
+    padding:22px 28px; background:var(--panel);
+    border-bottom:4px solid var(--yellow);
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+  }
+  .marca{font-family:'Oswald',sans-serif;font-weight:700;font-size:26px;
+         letter-spacing:1px;text-transform:uppercase;}
+  .marca span{color:var(--yellow);}
+  .lema{font-size:12px;color:var(--ink-dim);letter-spacing:1.5px;text-transform:uppercase;text-align:right;}
+
+  .contenedor{max-width:1000px;margin:0 auto;padding:28px 22px 50px;}
+
+  .titulo-seccion{
+    font-family:'Oswald',sans-serif;font-size:17px;text-transform:uppercase;
+    letter-spacing:2px;color:var(--yellow);margin:0 0 6px 0;
+  }
+  .sub-seccion{font-size:13px;color:var(--ink-dim);margin:0 0 18px 0;}
+
+  .tarjeta{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:16px 18px; margin-bottom:12px;
+    display:flex; align-items:center; gap:16px;
+  }
+  .tarjeta.atendiendo{border-left:4px solid var(--green);}
+  .tarjeta.demorado{border-left:4px solid var(--orange);}
+
+  .posicion{
+    min-width:52px;height:52px;border-radius:10px;background:var(--panel-2);
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;color:var(--yellow);
+    flex-shrink:0;
+  }
+  .posicion.listo{background:rgba(74,222,128,.15);color:var(--green);font-size:15px;}
+
+  .datos{flex:1;min-width:0;}
+  .placa{
+    display:inline-block;background:var(--yellow);color:var(--plate-black);
+    font-family:'JetBrains Mono',monospace;font-weight:700;font-size:19px;
+    letter-spacing:2px;padding:5px 12px;border-radius:6px;
+    border:2px solid var(--plate-black);
+  }
+  .servicio{font-size:13px;color:var(--ink-dim);margin-top:7px;}
+  .estado{font-size:13px;font-weight:600;text-align:right;flex-shrink:0;}
+  .estado.esperando{color:var(--yellow);}
+  .estado.atendiendo{color:var(--green);}
+
+  .vacio{
+    text-align:center;color:var(--ink-dim);padding:45px 20px;
+    border:1px dashed var(--line);border-radius:12px;font-size:14px;
+  }
+
+  .pie{
+    margin-top:32px;padding-top:18px;border-top:1px solid var(--line);
+    text-align:center;color:var(--ink-dim);font-size:12px;line-height:1.7;
+  }
+
+  #franja-sin-conexion{
+    display:none;align-items:center;justify-content:center;gap:12px;
+    background:#C24141;color:#fff;padding:10px;font-size:14px;
+  }
+
+  @media (max-width:640px){
+    header{padding:16px 18px;}
+    .marca{font-size:21px;}
+    .lema{font-size:10px;}
+    .contenedor{padding:20px 14px 40px;}
+    .tarjeta{gap:12px;padding:13px 14px;}
+    .posicion{min-width:44px;height:44px;font-size:18px;}
+    .placa{font-size:16px;}
+    .estado{font-size:11px;}
+  }
+</style>
+</head>
+<body>
+
+<div id="franja-sin-conexion">Actualizando…</div>
+
+<header>
+  <div class="marca">Frenos <span>Pala</span></div>
+  <div class="lema">Estamos 24/7<br>para atenderte</div>
+</header>
+
+<div class="contenedor">
+  <h2 class="titulo-seccion">En reparación</h2>
+  <p class="sub-seccion">Vehículos que ya están siendo atendidos</p>
+  <div id="lista-atendiendo"></div>
+
+  <h2 class="titulo-seccion" style="margin-top:32px;">En espera</h2>
+  <p class="sub-seccion">Los vehículos se atienden en orden de llegada</p>
+  <div id="lista-espera"></div>
+
+  <div class="pie">
+    Los turnos se asignan automáticamente según el orden de llegada<br>
+    y la especialidad requerida por cada vehículo.
+  </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+// Pantalla pública para la sala de espera. Solo muestra placas y posición:
+// no expone nombres de mecánicos ni tiempos internos del taller.
+
+const API_URL = window.location.origin;
+const socket = io(API_URL);
+
+const NOMBRE_SERVICIO = {
+    frenos:'Frenos', suspension:'Suspensión', aceite:'Cambio de aceite',
+    revision:'Revisión', alineacion:'Alineación'
+};
+
+// Ocultamos parte de la placa por privacidad del cliente: ABC123 -> ABC1**
+function placaParcial(placa) {
+    const p = String(placa || '');
+    if (p.length <= 3) return p;
+    return p.slice(0, p.length - 2) + '**';
+}
+
+function textoServicios(lista) {
+    if (!Array.isArray(lista) || lista.length === 0) return 'Servicio general';
+    return lista.map(s => NOMBRE_SERVICIO[s] || s).join(' + ');
+}
+
+function minutosDesde(t) {
+    if (!t) return 0;
+    return Math.floor((Date.now() - new Date(t).getTime()) / 60000);
+}
+
+async function cargar() {
+    try {
+        const [resEspera, resProceso] = await Promise.all([
+            fetch(`${API_URL}/turnos/en-espera`),
+            fetch(`${API_URL}/turnos/en-proceso`)
+        ]);
+        const espera = await resEspera.json();
+        const proceso = await resProceso.json();
+
+        document.getElementById('franja-sin-conexion').style.display = 'none';
+        pintarAtendiendo(Array.isArray(proceso) ? proceso : []);
+        pintarEspera(Array.isArray(espera) ? espera : []);
+    } catch (err) {
+        const franja = document.getElementById('franja-sin-conexion');
+        franja.textContent = 'Sin conexión. Reintentando…';
+        franja.style.display = 'flex';
+    }
+}
+
+function pintarAtendiendo(turnos) {
+    const cont = document.getElementById('lista-atendiendo');
+    if (turnos.length === 0) {
+        cont.innerHTML = '<div class="vacio">Ningún vehículo en reparación en este momento</div>';
+        return;
+    }
+    cont.innerHTML = turnos.map(t => `
+        <div class="tarjeta atendiendo">
+            <div class="posicion listo">EN<br>TALLER</div>
+            <div class="datos">
+                <span class="placa">${placaParcial(t.placa)}</span>
+                <div class="servicio">${textoServicios(t.tipo_servicios)}</div>
+            </div>
+            <div class="estado atendiendo">En reparación</div>
+        </div>`).join('');
+}
+
+function pintarEspera(turnos) {
+    const cont = document.getElementById('lista-espera');
+    if (turnos.length === 0) {
+        cont.innerHTML = '<div class="vacio">No hay vehículos en espera</div>';
+        return;
+    }
+    cont.innerHTML = turnos.map((t, i) => {
+        const demorado = minutosDesde(t.hora_llegada) >= 30;
+        return `
+        <div class="tarjeta ${demorado ? 'demorado' : ''}">
+            <div class="posicion">${i + 1}</div>
+            <div class="datos">
+                <span class="placa">${placaParcial(t.placa)}</span>
+                <div class="servicio">${textoServicios(t.tipo_servicios)}</div>
+            </div>
+            <div class="estado esperando">
+                ${i === 0 ? 'Siguiente' : `${i} adelante`}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+socket.on('actualizar_tv', cargar);
+cargar();
+setInterval(cargar, 10000); // respaldo, los cambios llegan al instante por socket
+</script>
+</body>
+</html>

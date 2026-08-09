@@ -28,6 +28,16 @@ const NOMBRE_SERVICIO = {
 // Servicios que ocupan las plataformas (van a la columna de la fosa)
 const SERVICIOS_FOSA = ['revision', 'alineacion'];
 
+// A partir de estos minutos, la tarjeta cambia de color para que se note
+// desde lejos que algo se está demorando más de lo normal.
+const MINUTOS_ATENCION = 45;   // vehículo en reparación
+const MINUTOS_ESPERA   = 30;   // vehículo esperando en la fila
+
+function minutosDesde(timestamp) {
+    if (!timestamp) return 0;
+    return Math.floor((Date.now() - new Date(timestamp).getTime()) / 60000);
+}
+
 // Un turno puede necesitar varios servicios: los mostramos separados por " + "
 function textoServicios(lista) {
     if (!Array.isArray(lista) || lista.length === 0) return 'General';
@@ -231,11 +241,13 @@ function pintarMecanicos() {
 
             if (ocupado && m.placa_actual) {
                 const servicio = textoServicios(m.tipo_servicios);
+                const demorado = minutosDesde(m.hora_inicio) >= MINUTOS_ATENCION;
+                if (demorado) li.className += ' demorado';
                 infoDetalle = `<div class="vehiculo-asignado">🚗 <strong>${m.placa_actual}</strong> (${servicio})</div>`;
                 derechaHtml = `
                     <div style="text-align:right; font-family:monospace;">
-                        <span class="badge-estado badge-ocupado" style="display:inline-block; margin-bottom:4px;">Ocupado</span><br>
-                        <span style="font-size:1.1rem; font-weight:bold; color:#eab308;">⏱️ ${formatearCronometro(m.hora_inicio)}</span>
+                        <span class="badge-estado ${demorado ? 'badge-demorado' : 'badge-ocupado'}" style="display:inline-block; margin-bottom:4px;">${demorado ? 'Demorado' : 'Ocupado'}</span><br>
+                        <span style="font-size:1.1rem; font-weight:bold; color:${demorado ? '#fb923c' : '#eab308'};">⏱️ ${formatearCronometro(m.hora_inicio)}</span>
                     </div>`;
             } else {
                 // Cuánto lleva esperando sin carro
@@ -308,7 +320,9 @@ function pintarEnEspera() {
 
 function crearTarjetaTurno(t, etiqueta, color, claseExtra) {
     const li = document.createElement('li');
-    li.className = `item-card ${claseExtra}`;
+    const demorado = minutosDesde(t.hora_llegada) >= MINUTOS_ESPERA;
+    li.className = `item-card ${claseExtra}${demorado ? ' demorado' : ''}`;
+    if (demorado) color = '#fb923c';
 
     const servicio = textoServicios(t.tipo_servicios);
     const textoVip = t.es_vip && t.nombre_mecanico_preferido

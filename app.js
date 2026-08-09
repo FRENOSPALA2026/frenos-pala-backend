@@ -7,6 +7,11 @@ const { Server } = require('socket.io');
 
 const pool = require('./db');
 const { asignarSiguienteTurno, intentarAsignarDisponibles } = require('./motor');
+const { registrar, usuarioDe } = require('./auditoria');
+
+// Zona horaria del taller. La base guarda en UTC; sin esto, un carro que
+// entra a las 8 PM quedaría contado como del día siguiente en los informes.
+const ZONA = 'America/Bogota';
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +20,31 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ==========================================
+// PROTECCIÓN DE ESCRITURA (opcional)
+// ==========================================
+// Sin esto, cualquiera que conozca la dirección del servidor podría crear
+// o borrar mecánicos desde un navegador. Las consultas (GET) siguen libres
+// porque la TV necesita leerlas sin complicaciones.
+//
+// Se activa poniendo la variable de entorno API_TOKEN en Render. Si no está
+// definida, el sistema funciona igual que antes (sin pedir clave), para no
+// romper nada mientras se configura.
+const API_TOKEN = process.env.API_TOKEN;
+
+app.use((req, res, next) => {
+    if (!API_TOKEN) return next();                 // protección desactivada
+    if (req.method === 'GET') return next();       // leer es libre
+    if (req.path === '/ping') return next();
+
+    if (req.headers['x-api-token'] !== API_TOKEN) {
+        return res.status(401).json({
+            error: 'No autorizado. Esta acción requiere la clave del sistema.'
+        });
+    }
+    next();
+});
 
 // Avisos en tiempo real a la TV y a las tablets conectadas
 function avisarCambio() {
@@ -33,6 +63,35 @@ io.on('connection', (socket) => {
     console.log('🟢 Dispositivo conectado:', socket.id);
     socket.on('disconnect', () => console.log('🔴 Dispositivo desconectado:', socket.id));
 });
+
+// ==========================================
+// SESIONES DE TRABAJO (tiempo activo)
+// ==========================================
+// Cada tramo en que un mecánico está ACTIVO se guarda como una sesión.
+// Sumando esas sesiones sale cuántas horas estuvo disponible en el día,
+// la semana, el mes o el año.
+
+async function abrirSesion(mecanicoId) {
+    // Si ya tiene una abierta no hacemos nada, para no duplicar tramos
+    const abierta = await pool.query(
+        'SELECT 1 FROM sesiones_mecanico WHERE mecanico_id = $1 AND fin IS NULL LIMIT 1',
+        [mecanicoId]
+    );
+    if (abierta.rows.length > 0) return;
+
+    await pool.query(
+        'INSERT INTO sesiones_mecanico (mecanico_id, inicio) VALUES ($1, CURRENT_TIMESTAMP)',
+        [mecanicoId]
+    );
+}
+
+async function cerrarSesion(mecanicoId) {
+    await pool.query(
+        `UPDATE sesiones_mecanico SET fin = CURRENT_TIMESTAMP
+         WHERE mecanico_id = $1 AND fin IS NULL`,
+        [mecanicoId]
+    );
+}
 
 // ==========================================
 // MECÁNICOS
@@ -86,6 +145,15 @@ app.post('/mecanicos', async (req, res, next) => {
              VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
             [nombre, !!sabe_frenos, !!sabe_suspension, !!sabe_aceite, !!sabe_revision, !!sabe_alineacion]
         );
+        await abrirSesion(r.rows[0].id);
+
+        await registrar({
+            accion: 'CREAR_MECANICO',
+            detalle: `Se agregó a ${nombre} a la plantilla`,
+            usuario: usuarioDe(req),
+            mecanicoId: r.rows[0].id
+        });
+
         avisarCambio();
         res.json(r.rows[0]);
     } catch (err) { next(err); }
@@ -98,8 +166,24 @@ app.put('/mecanicos/:id', async (req, res, next) => {
                 estado_asistencia, estado_trabajo } = req.body;
 
         // Miramos cómo estaba ANTES, para saber si de verdad hubo un cambio
-        const previo = await pool.query('SELECT estado_asistencia FROM mecanicos WHERE id = $1', [id]);
-        const estadoAnterior = previo.rows[0] ? previo.rows[0].estado_asistencia : null;
+        const previo = await pool.query(
+            'SELECT estado_asistencia, estado_trabajo, nombre FROM mecanicos WHERE id = $1', [id]
+        );
+        if (previo.rows.length === 0) {
+            return res.status(404).json({ error: 'Mecánico no encontrado' });
+        }
+        const estadoAnterior = previo.rows[0].estado_asistencia;
+
+        // Un mecánico que está atendiendo un carro NO puede pasar a Pausa o
+        // Inactivo: el vehículo quedaría asignado a alguien que ya no está.
+        // Primero hay que liberarlo o cancelar ese turno.
+        if (previo.rows[0].estado_trabajo === 'OCUPADO' &&
+            estado_asistencia && estado_asistencia !== 'ACTIVO') {
+            return res.status(400).json({
+                error: `${previo.rows[0].nombre} está atendiendo un vehículo. ` +
+                       `Libéralo primero para poder cambiar su estado.`
+            });
+        }
 
         const r = await pool.query(
             `UPDATE mecanicos SET
@@ -148,6 +232,24 @@ app.put('/mecanicos/:id', async (req, res, next) => {
         if (mecanico.estado_asistencia === 'ACTIVO' && mecanico.estado_trabajo === 'DISPONIBLE') {
             asignacion = await asignarSiguienteTurno(mecanico.id);
             if (asignacion.asignado) mecanico = asignacion.mecanico;
+        }
+
+        // Abrimos o cerramos su sesión de trabajo según el estado nuevo
+        if (estado_asistencia && estado_asistencia !== estadoAnterior) {
+            if (estado_asistencia === 'ACTIVO') {
+                await abrirSesion(mecanico.id);
+            } else {
+                await cerrarSesion(mecanico.id);
+            }
+        }
+
+        if (estado_asistencia && estado_asistencia !== estadoAnterior) {
+            await registrar({
+                accion: 'ESTADO_MECANICO',
+                detalle: `${mecanico.nombre}: ${estadoAnterior} -> ${estado_asistencia}`,
+                usuario: usuarioDe(req),
+                mecanicoId: mecanico.id
+            });
         }
 
         avisarCambio();
@@ -205,6 +307,13 @@ app.delete('/mecanicos/:id', async (req, res, next) => {
             nuevas.forEach(avisarNuevaAsignacion);
         }
 
+        await registrar({
+            accion: 'ELIMINAR_MECANICO',
+            detalle: `Se eliminó a ${mecanico.nombre} de la plantilla`,
+            usuario: usuarioDe(req),
+            mecanicoId: Number(id)
+        });
+
         avisarCambio();
         res.json({
             eliminado: true,
@@ -258,6 +367,15 @@ app.post('/turnos', async (req, res, next) => {
              es_vip ? nombre_mecanico_preferido : null]
         );
         const turno = r.rows[0];
+
+        await registrar({
+            accion: 'INGRESO',
+            detalle: `Ingresó ${placa} (${servicios.join(', ')})${es_vip ? ' — PREFERENCIAL' : ''}`,
+            usuario: usuarioDe(req),
+            placa,
+            turnoId: turno.id,
+            datos: { servicios, es_vip: !!es_vip, mecanico_preferido_id: mecanico_preferido_id || null }
+        });
 
         // Si hay algún mecánico libre compatible, se le asigna de inmediato
         const asignaciones = await intentarAsignarDisponibles();
@@ -349,7 +467,158 @@ app.put('/mecanicos/:id/liberar', async (req, res, next) => {
             return res.status(400).json({ error: 'Este mecánico no tiene ningún turno en proceso' });
         }
         const resultado = await finalizarTurnoPorId(activo.rows[0].id);
+
+        await registrar({
+            accion: 'LIBERAR',
+            detalle: `Se entregó ${resultado.turno.placa}`,
+            usuario: usuarioDe(req),
+            placa: resultado.turno.placa,
+            mecanicoId: Number(req.params.id),
+            turnoId: resultado.turno.id
+        });
+
         res.json({ mensaje: 'Turno finalizado', ...resultado });
+    } catch (err) { next(err); }
+});
+
+
+// ==========================================
+// CORREGIR Y CANCELAR TURNOS
+// ==========================================
+// Si el turnero digita mal una placa, tiene que poder arreglarlo. Sin esto,
+// el carro equivocado se queda en la fila para siempre.
+
+// Corregir la placa o los servicios de un turno que aún no ha empezado
+app.put('/turnos/:id', async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { placa, tipo_servicios } = req.body;
+
+        const actual = await pool.query('SELECT * FROM turnos WHERE id = $1', [id]);
+        if (actual.rows.length === 0) {
+            return res.status(404).json({ error: 'Turno no encontrado' });
+        }
+        const turno = actual.rows[0];
+
+        if (turno.estado_turno !== 'EN_ESPERA') {
+            return res.status(400).json({
+                error: 'Solo se pueden corregir vehículos que todavía están en espera.'
+            });
+        }
+
+        let servicios = null;
+        if (Array.isArray(tipo_servicios) && tipo_servicios.length > 0) {
+            servicios = [...new Set(tipo_servicios.map(x => String(x).toLowerCase().trim()))];
+            const VALIDOS = ['frenos', 'suspension', 'aceite', 'revision', 'alineacion'];
+            const malos = servicios.filter(x => !VALIDOS.includes(x));
+            if (malos.length > 0) {
+                return res.status(400).json({ error: `Servicio no reconocido: ${malos.join(', ')}` });
+            }
+        }
+
+        const r = await pool.query(
+            `UPDATE turnos
+             SET placa = COALESCE($1, placa),
+                 tipo_servicios = COALESCE($2::text[], tipo_servicios)
+             WHERE id = $3 RETURNING *`,
+            [placa ? String(placa).toUpperCase().trim() : null, servicios, id]
+        );
+
+        await registrar({
+            accion: 'CORREGIR',
+            detalle: `Turno corregido: ${turno.placa} -> ${r.rows[0].placa}`,
+            usuario: usuarioDe(req),
+            placa: r.rows[0].placa,
+            turnoId: turno.id,
+            datos: { antes: { placa: turno.placa, servicios: turno.tipo_servicios },
+                     despues: { placa: r.rows[0].placa, servicios: r.rows[0].tipo_servicios } }
+        });
+
+        // Los servicios pueden haber cambiado: quizá ahora sí hay quien lo atienda
+        const asignaciones = await intentarAsignarDisponibles();
+        asignaciones.forEach(avisarNuevaAsignacion);
+        avisarCambio();
+
+        res.json({ turno: r.rows[0] });
+    } catch (err) { next(err); }
+});
+
+// Cancelar un turno. No se borra: queda marcado como CANCELADO para que
+// el historial siga siendo confiable y se pueda auditar después.
+app.put('/turnos/:id/cancelar', async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { motivo } = req.body;
+
+        const actual = await pool.query('SELECT * FROM turnos WHERE id = $1', [id]);
+        if (actual.rows.length === 0) {
+            return res.status(404).json({ error: 'Turno no encontrado' });
+        }
+        const turno = actual.rows[0];
+
+        if (turno.estado_turno === 'FINALIZADO') {
+            return res.status(400).json({ error: 'Este vehículo ya fue entregado, no se puede cancelar.' });
+        }
+        if (turno.estado_turno === 'CANCELADO') {
+            return res.status(400).json({ error: 'Este vehículo ya estaba cancelado.' });
+        }
+
+        const r = await pool.query(
+            `UPDATE turnos
+             SET estado_turno = 'CANCELADO',
+                 hora_cancelacion = CURRENT_TIMESTAMP,
+                 motivo_cancelacion = $1
+             WHERE id = $2 RETURNING *`,
+            [motivo || 'Sin motivo registrado', id]
+        );
+
+        // Si ya lo estaba atendiendo alguien, ese mecánico queda libre
+        let siguiente = { asignado: false };
+        if (turno.mecanico_id && turno.estado_turno === 'EN_PROCESO') {
+            await pool.query(
+                `UPDATE mecanicos SET estado_trabajo = 'DISPONIBLE',
+                                      disponible_desde = CURRENT_TIMESTAMP
+                 WHERE id = $1`,
+                [turno.mecanico_id]
+            );
+            siguiente = await asignarSiguienteTurno(turno.mecanico_id);
+            avisarNuevaAsignacion(siguiente);
+        }
+
+        await registrar({
+            accion: 'CANCELAR',
+            detalle: `Turno cancelado. Motivo: ${motivo || 'no indicado'}`,
+            usuario: usuarioDe(req),
+            placa: turno.placa,
+            mecanicoId: turno.mecanico_id,
+            turnoId: turno.id
+        });
+
+        avisarCambio();
+        res.json({ turno: r.rows[0], siguiente_turno: siguiente });
+    } catch (err) { next(err); }
+});
+
+// Consultar el registro de acciones (para la gerencia)
+app.get('/api/auditoria', async (req, res, next) => {
+    try {
+        const limite = Math.min(parseInt(req.query.limite) || 100, 500);
+        const { placa, accion } = req.query;
+
+        const condiciones = [];
+        const valores = [];
+        let i = 1;
+        if (placa) { condiciones.push(`placa ILIKE $${i++}`); valores.push(`%${placa}%`); }
+        if (accion) { condiciones.push(`accion = $${i++}`); valores.push(accion); }
+
+        const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+        valores.push(limite);
+
+        const r = await pool.query(
+            `SELECT * FROM auditoria ${where} ORDER BY fecha DESC LIMIT $${i}`,
+            valores
+        );
+        res.json(r.rows);
     } catch (err) { next(err); }
 });
 
@@ -368,18 +637,27 @@ app.get('/api/informes', async (req, res, next) => {
         const values = [];
         let i = 1;
 
+        // Todas las fechas se comparan en HORA DE COLOMBIA, no en UTC.
+        // Sin esta conversión, los carros que entran después de las 7 PM
+        // aparecían contados en el día siguiente.
+        const fechaLocal = `(hora_llegada AT TIME ZONE 'UTC' AT TIME ZONE '${ZONA}')`;
+        const hoyLocal = `(CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')::date`;
+
         if (filtroTiempo === 'hoy') {
-            query += ` AND hora_llegada::date = CURRENT_DATE`;
+            query += ` AND ${fechaLocal}::date = ${hoyLocal}`;
         } else if (filtroTiempo === 'semana') {
-            query += ` AND hora_llegada >= date_trunc('week', CURRENT_DATE)`;
+            query += ` AND ${fechaLocal}::date >= date_trunc('week', ${hoyLocal})::date`;
         } else if (filtroTiempo === 'mes') {
-            query += ` AND hora_llegada >= date_trunc('month', CURRENT_DATE)`;
+            query += ` AND ${fechaLocal}::date >= date_trunc('month', ${hoyLocal})::date`;
         } else if (filtroTiempo === 'ano') {
-            query += ` AND hora_llegada >= date_trunc('year', CURRENT_DATE)`;
+            query += ` AND ${fechaLocal}::date >= date_trunc('year', ${hoyLocal})::date`;
         } else if (filtroTiempo === 'especifica' && fechaEspecifica) {
-            query += ` AND hora_llegada::date = $${i++}`;
+            query += ` AND ${fechaLocal}::date = $${i++}::date`;
             values.push(fechaEspecifica);
         }
+
+        // Los turnos cancelados nunca cuentan en los informes
+        query += ` AND estado_turno <> 'CANCELADO'`;
 
         if (mecanicoId && mecanicoId !== 'general') {
             query += ` AND mecanico_id = $${i++}`;
@@ -396,6 +674,93 @@ app.get('/api/informes', async (req, res, next) => {
         });
 
         res.json(stats);
+    } catch (err) { next(err); }
+});
+
+
+// Tiempo que cada mecánico estuvo ACTIVO en el periodo consultado.
+// Suma solo la parte de cada sesión que cae dentro del rango: si alguien
+// entró a las 10 PM y salió a las 6 AM, el informe de "hoy" cuenta solo
+// las horas que corresponden a hoy, no la sesión completa.
+app.get('/api/informes/tiempo-activo', async (req, res, next) => {
+    try {
+        const { filtroTiempo, fechaEspecifica } = req.query;
+
+        // El rango se calcula en hora de Colombia y luego se lleva a UTC,
+        // que es como la base guarda las fechas.
+        let desde, hasta;
+        const inicioDeHoy = `date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')`;
+
+        if (filtroTiempo === 'hoy') {
+            desde = inicioDeHoy;
+            hasta = `(${inicioDeHoy} + interval '1 day')`;
+        } else if (filtroTiempo === 'semana') {
+            desde = `date_trunc('week', CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')`;
+            hasta = `(${desde} + interval '1 week')`;
+        } else if (filtroTiempo === 'mes') {
+            desde = `date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')`;
+            hasta = `(${desde} + interval '1 month')`;
+        } else if (filtroTiempo === 'ano') {
+            desde = `date_trunc('year', CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')`;
+            hasta = `(${desde} + interval '1 year')`;
+        } else if (filtroTiempo === 'especifica' && fechaEspecifica) {
+            desde = `$1::date`;
+            hasta = `($1::date + interval '1 day')`;
+        } else {
+            // 'siempre': desde el primer registro hasta ahora
+            desde = `'1970-01-01'::timestamp`;
+            hasta = `(CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')`;
+        }
+
+        // Pasamos el rango de hora local a UTC para comparar con la base
+        const desdeUTC = `((${desde}) AT TIME ZONE '${ZONA}' AT TIME ZONE 'UTC')`;
+        const hastaUTC = `((${hasta}) AT TIME ZONE '${ZONA}' AT TIME ZONE 'UTC')`;
+
+        const valores = [];
+        if (filtroTiempo === 'especifica' && fechaEspecifica) valores.push(fechaEspecifica);
+
+        const r = await pool.query(`
+            SELECT m.id,
+                   m.nombre,
+                   m.estado_asistencia,
+                   COALESCE(SUM(
+                       EXTRACT(EPOCH FROM (
+                           LEAST(COALESCE(s.fin, CURRENT_TIMESTAMP), ${hastaUTC})
+                         - GREATEST(s.inicio, ${desdeUTC})
+                       ))
+                   ), 0) AS segundos_activo,
+                   COUNT(s.id) FILTER (WHERE s.id IS NOT NULL) AS tramos
+            FROM mecanicos m
+            LEFT JOIN sesiones_mecanico s
+                   ON s.mecanico_id = m.id
+                  AND s.inicio < ${hastaUTC}
+                  AND COALESCE(s.fin, CURRENT_TIMESTAMP) > ${desdeUTC}
+            GROUP BY m.id, m.nombre, m.estado_asistencia
+            ORDER BY segundos_activo DESC, m.nombre
+        `, valores);
+
+        const mecanicos = r.rows.map(f => {
+            const seg = Math.max(0, Math.round(Number(f.segundos_activo)));
+            return {
+                id: f.id,
+                nombre: f.nombre,
+                estado_asistencia: f.estado_asistencia,
+                segundos_activo: seg,
+                horas: Math.floor(seg / 3600),
+                minutos: Math.floor((seg % 3600) / 60),
+                tramos: Number(f.tramos),
+                en_turno_ahora: f.estado_asistencia === 'ACTIVO'
+            };
+        });
+
+        const totalSegundos = mecanicos.reduce((a, m) => a + m.segundos_activo, 0);
+
+        res.json({
+            mecanicos,
+            total_segundos: totalSegundos,
+            total_horas: Math.floor(totalSegundos / 3600),
+            total_minutos: Math.floor((totalSegundos % 3600) / 60)
+        });
     } catch (err) { next(err); }
 });
 

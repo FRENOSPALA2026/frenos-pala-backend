@@ -400,3 +400,26 @@ header h1 span {
     .aviso-texto { font-size: 22px; }
     .aviso-sub { font-size: 13px; }
 }
+
+/* ============================================================
+   VEHÍCULO DEMORADO
+   La tarjeta cambia a naranja cuando un carro lleva más tiempo
+   del normal. Convierte el tablero de informativo a operativo:
+   quien entra al taller ve el naranja y sabe dónde mirar.
+   ============================================================ */
+.item-card.demorado {
+    border-left: 4px solid #FB923C;
+    background: rgba(251, 146, 60, 0.08);
+}
+
+.badge-demorado {
+    background: rgba(251, 146, 60, 0.2);
+    color: #FB923C;
+    border: 1px solid #FB923C;
+    animation: pulso-demora 2s ease-in-out infinite;
+}
+
+@keyframes pulso-demora {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+}
