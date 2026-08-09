@@ -340,7 +340,8 @@ app.delete('/mecanicos/:id', async (req, res, next) => {
 app.post('/turnos', async (req, res, next) => {
     try {
         const { placa, tipo_servicios, tipo_servicio, es_vip,
-                mecanico_preferido_id, nombre_mecanico_preferido } = req.body;
+                mecanico_preferido_id, nombre_mecanico_preferido,
+                hora_llegada, clave_unica } = req.body;
 
         // Aceptamos tanto la lista nueva (tipo_servicios) como el formato
         // viejo de un solo servicio (tipo_servicio), por compatibilidad.
@@ -364,12 +365,64 @@ app.post('/turnos', async (req, res, next) => {
             return res.status(400).json({ error: 'Un turno VIP necesita mecanico_preferido_id' });
         }
 
+        const placaLimpia = String(placa).toUpperCase().trim();
+
+        // ---- PROTECCIÓN 1: misma clave = mismo registro ----
+        // Si la tablet reintenta enviar algo que en realidad ya llegó
+        // (pasa cuando el servidor tarda en responder), devolvemos el
+        // vehículo que ya se creó en vez de crear otro.
+        if (clave_unica) {
+            const yaExiste = await pool.query(
+                'SELECT * FROM turnos WHERE clave_unica = $1', [clave_unica]
+            );
+            if (yaExiste.rows.length > 0) {
+                return res.json({
+                    turno: yaExiste.rows[0],
+                    duplicado_evitado: true,
+                    asignado_de_inmediato: yaExiste.rows[0].estado_turno === 'EN_PROCESO',
+                    asignaciones: []
+                });
+            }
+        }
+
+        // ---- PROTECCIÓN 2: un carro no puede estar dos veces en el taller ----
+        const yaEnTaller = await pool.query(
+            `SELECT id, estado_turno FROM turnos
+             WHERE placa = $1 AND estado_turno IN ('EN_ESPERA', 'EN_PROCESO')
+             LIMIT 1`,
+            [placaLimpia]
+        );
+        if (yaEnTaller.rows.length > 0) {
+            const estado = yaEnTaller.rows[0].estado_turno === 'EN_PROCESO'
+                ? 'ya está siendo atendido'
+                : 'ya está en la fila de espera';
+            return res.status(409).json({
+                error: `${placaLimpia} ${estado}. Si es otro vehículo, revisa la placa.`
+            });
+        }
+
+        // Si la tablet estuvo sin internet, manda la hora REAL en que llegó
+        // el carro, para que la fila respete el orden de llegada de verdad.
+        // Se ignora una hora futura o de hace más de 12 horas (dato dudoso).
+        let llegada = null;
+        if (hora_llegada) {
+            const f = new Date(hora_llegada);
+            const ahora = Date.now();
+            if (!isNaN(f) && f.getTime() <= ahora && (ahora - f.getTime()) < 12 * 3600 * 1000) {
+                llegada = f.toISOString();
+            }
+        }
+
         const r = await pool.query(
-            `INSERT INTO turnos (placa, tipo_servicios, es_vip, mecanico_preferido_id, nombre_mecanico_preferido)
-             VALUES ($1, $2::text[], $3, $4, $5) RETURNING *`,
-            [placa, servicios, !!es_vip,
+            `INSERT INTO turnos (placa, tipo_servicios, es_vip, mecanico_preferido_id,
+                                 nombre_mecanico_preferido, hora_llegada, clave_unica)
+             VALUES ($1, $2::text[], $3, $4, $5,
+                     COALESCE($6::timestamp, CURRENT_TIMESTAMP), $7)
+             RETURNING *`,
+            [placaLimpia, servicios, !!es_vip,
              es_vip ? mecanico_preferido_id : null,
-             es_vip ? nombre_mecanico_preferido : null]
+             es_vip ? nombre_mecanico_preferido : null,
+             llegada, clave_unica || null]
         );
         const turno = r.rows[0];
 
