@@ -11,6 +11,11 @@
 //    limpia al terminar. No toca los datos reales del taller.
 
 const BASE = process.argv[2] || process.env.API_URL || 'http://localhost:3000';
+
+// Cada ejecución usa su propia clave. Si se reutilizara la misma, la
+// ejecución de hoy encontraría la clave que dejó la de ayer y la prueba
+// mediría algo distinto de lo que pretende.
+const CLAVE_PRUEBA = `prueba_${Date.now()}`;
 const TOKEN = process.env.API_TOKEN || '';
 
 let pasadas = 0, falladas = 0;
@@ -101,14 +106,14 @@ async function pruebaDuplicados() {
     console.log('\n▶ Protección contra duplicados');
 
     const primero = await pedir('POST', '/turnos', {
-        placa: 'ZZZ002', tipo_servicios: ['frenos'], clave_unica: 'prueba_clave_repetida'
+        placa: 'ZZZ002', tipo_servicios: ['frenos'], clave_unica: CLAVE_PRUEBA
     });
     if (primero.datos?.turno?.id) creados.turnos.push(primero.datos.turno.id);
     verificar('Se registra el primer vehículo', primero.estado === 200);
 
     // Misma clave: debe devolver el mismo, no crear otro
     const repetido = await pedir('POST', '/turnos', {
-        placa: 'ZZZ002', tipo_servicios: ['frenos'], clave_unica: 'prueba_clave_repetida'
+        placa: 'ZZZ002', tipo_servicios: ['frenos'], clave_unica: CLAVE_PRUEBA
     });
     verificar('La misma clave devuelve el vehículo ya creado, no uno nuevo',
         repetido.estado === 200 && repetido.datos?.duplicado_evitado === true &&

@@ -389,9 +389,16 @@ app.post('/turnos', async (req, res, next) => {
         // Si la tablet reintenta enviar algo que en realidad ya llegó
         // (pasa cuando el servidor tarda en responder), devolvemos el
         // vehículo que ya se creó en vez de crear otro.
+        // Solo se consideran claves de las últimas 24 horas. Una clave sirve
+        // para reconocer un reintento que ocurre en minutos, no para revivir
+        // un vehículo de la semana pasada: sin este límite, una clave vieja
+        // podía devolver un turno ya cancelado en vez de registrar el nuevo.
         if (clave_unica) {
             const yaExiste = await pool.query(
-                'SELECT * FROM turnos WHERE clave_unica = $1', [clave_unica]
+                `SELECT * FROM turnos
+                 WHERE clave_unica = $1
+                   AND hora_llegada > CURRENT_TIMESTAMP - interval '24 hours'`,
+                [clave_unica]
             );
             if (yaExiste.rows.length > 0) {
                 return res.json({
