@@ -378,7 +378,8 @@ actualizarPantalla();
 //   - Cada 1 segundo: repintamos con los datos en memoria para que los
 //     cronómetros corran suave. No consume nada de red ni de base de datos.
 //
-//   - Cada 5 segundos: pedimos datos frescos al servidor, como respaldo
-//     por si la conexión en tiempo real se llegara a caer.
+//   - Cada 30 segundos: pedimos datos frescos al servidor, solo como
+//     respaldo. En la TV el tiempo real SÍ funciona, así que no hace falta
+//     preguntar seguido; espaciarlo cuida el plan gratuito de Supabase.
 setInterval(refrescarCronometros, 1000);
-setInterval(actualizarPantalla, 5000);
+setInterval(actualizarPantalla, 30000);
