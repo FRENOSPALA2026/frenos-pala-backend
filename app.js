@@ -590,9 +590,27 @@ app.put('/turnos/:id', async (req, res, next) => {
         }
         const turno = actual.rows[0];
 
-        if (turno.estado_turno !== 'EN_ESPERA') {
+        // La PLACA se puede corregir siempre que el carro siga en el taller.
+        // Es lo más común: el turnero digita mal, el motor asigna el carro de
+        // inmediato (porque había un mecánico libre) y ya no se podría
+        // arreglar. Cambiar la placa no altera a quién le tocó el trabajo.
+        if (turno.estado_turno !== 'EN_ESPERA' && turno.estado_turno !== 'EN_PROCESO') {
+            const explicacion = turno.estado_turno === 'FINALIZADO'
+                ? 'ya fue entregado'
+                : 'fue cancelado';
             return res.status(400).json({
-                error: 'Solo se pueden corregir vehículos que todavía están en espera.'
+                error: `Este vehículo ${explicacion}, ya no se puede corregir.`
+            });
+        }
+
+        // Los SERVICIOS solo se cambian mientras el carro espera. Si ya lo
+        // está atendiendo alguien, cambiarlos podría dejarle un trabajo que
+        // no sabe hacer. En ese caso hay que liberarlo o cancelar el turno.
+        if (Array.isArray(tipo_servicios) && tipo_servicios.length > 0 &&
+            turno.estado_turno === 'EN_PROCESO') {
+            return res.status(400).json({
+                error: 'Este vehículo ya está siendo atendido: solo se puede ' +
+                       'corregir la placa, no los servicios.'
             });
         }
 
@@ -606,12 +624,29 @@ app.put('/turnos/:id', async (req, res, next) => {
             }
         }
 
+        const placaNueva = placa ? String(placa).toUpperCase().trim() : null;
+
+        // No dejar que la corrección choque con otro carro que ya está adentro
+        if (placaNueva && placaNueva !== turno.placa) {
+            const choque = await pool.query(
+                `SELECT 1 FROM turnos
+                 WHERE placa = $1 AND id <> $2
+                   AND estado_turno IN ('EN_ESPERA', 'EN_PROCESO') LIMIT 1`,
+                [placaNueva, id]
+            );
+            if (choque.rows.length > 0) {
+                return res.status(409).json({
+                    error: `${placaNueva} ya está registrado en el taller.`
+                });
+            }
+        }
+
         const r = await pool.query(
             `UPDATE turnos
              SET placa = COALESCE($1, placa),
                  tipo_servicios = COALESCE($2::text[], tipo_servicios)
              WHERE id = $3 RETURNING *`,
-            [placa ? String(placa).toUpperCase().trim() : null, servicios, id]
+            [placaNueva, servicios, id]
         );
 
         await registrar({

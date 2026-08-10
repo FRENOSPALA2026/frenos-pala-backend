@@ -156,10 +156,26 @@ async function pruebaCancelacion() {
     verificar('Se registra un vehículo para la fosa', turno.estado === 200);
 
     if (id) {
+        // La placa se corrige esté en espera o ya siendo atendida. Esta
+        // prueba no puede depender de si había un mecánico libre en ese
+        // momento, porque eso cambia según cómo esté el taller.
         const corregido = await pedir('PUT', `/turnos/${id}`, { placa: 'ZZZ007' });
-        verificar('Se puede corregir la placa de un vehículo en espera',
+        verificar('Se puede corregir la placa (esté en espera o en atención)',
             corregido.estado === 200 && corregido.datos?.turno?.placa === 'ZZZ007',
-            `Recibido: ${JSON.stringify(corregido.datos).slice(0, 160)}`);
+            `Recibido: ${JSON.stringify(corregido.datos).slice(0, 180)}`);
+
+        // Una placa que ya está adentro no se puede poner por error
+        const otro = await pedir('POST', '/turnos', {
+            placa: 'ZZZ009', tipo_servicios: ['frenos']
+        });
+        if (otro.datos?.turno?.id) {
+            creados.turnos.push(otro.datos.turno.id);
+            const choque = await pedir('PUT', `/turnos/${otro.datos.turno.id}`,
+                { placa: 'ZZZ007' });
+            verificar('Corregir a una placa que ya está en el taller se rechaza',
+                choque.estado === 409,
+                `Esperado 409, recibido ${choque.estado}`);
+        }
 
         const cancelado = await pedir('PUT', `/turnos/${id}/cancelar`, {
             motivo: 'Prueba automatizada'
