@@ -13,6 +13,7 @@ const { Server } = require('socket.io');
 const pool = require('./db');
 const { asignarSiguienteTurno, intentarAsignarDisponibles } = require('./motor');
 const { registrar, usuarioDe } = require('./auditoria');
+const { generarRespaldo, enviarPorCorreo } = require('./respaldo');
 
 // Zona horaria del taller. La base guarda en UTC; sin esto, un carro que
 // entra a las 8 PM quedaría contado como del día siguiente en los informes.
@@ -916,6 +917,63 @@ app.get('/api/informes/tiempo-activo', async (req, res, next) => {
             total_minutos: Math.floor((totalSegundos % 3600) / 60)
         });
     } catch (err) { next(err); }
+});
+
+
+// ==========================================
+// RESPALDO DE LA BASE DE DATOS
+// ==========================================
+// El plan gratuito de Supabase no hace respaldos. Estas rutas permiten
+// generar una copia y enviarla por correo, y un servicio externo las llama
+// todos los días (ver RESPALDO.md).
+//
+// Se protegen con su propia clave (BACKUP_TOKEN) para que nadie pueda
+// descargarse toda la base de datos conociendo solo la dirección.
+
+function claveRespaldoValida(req) {
+    const esperada = process.env.BACKUP_TOKEN;
+    if (!esperada) return false; // sin clave configurada, no se permite nada
+    const recibida = req.headers['x-backup-token'] || req.query.token;
+    return recibida === esperada;
+}
+
+// Dispara el respaldo y lo manda por correo. Es la que llama el servicio
+// automático todos los días.
+//
+// Si algo falla devuelve error 500 a propósito: así el servicio externo lo
+// detecta y te avisa por correo. Ese es el aviso de "el respaldo falló".
+app.all('/api/respaldo/enviar', async (req, res) => {
+    if (!claveRespaldoValida(req)) {
+        return res.status(401).json({ error: 'Clave de respaldo inválida o no configurada' });
+    }
+
+    try {
+        const resultado = await enviarPorCorreo();
+        console.log(`💾 Respaldo enviado a ${resultado.destino} (${resultado.peso_mb} MB)`);
+        res.json({ ok: true, ...resultado });
+    } catch (err) {
+        console.error('❌ El respaldo falló:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// Descarga manual, por si quieres una copia en el momento
+app.get('/api/respaldo/descargar', async (req, res) => {
+    if (!claveRespaldoValida(req)) {
+        return res.status(401).json({ error: 'Clave de respaldo inválida o no configurada' });
+    }
+
+    try {
+        const respaldo = await generarRespaldo();
+        const fecha = new Date().toISOString().slice(0, 10);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition',
+            `attachment; filename="frenos-pala-respaldo-${fecha}.json"`);
+        res.send(JSON.stringify(respaldo, null, 2));
+    } catch (err) {
+        console.error('❌ No se pudo generar el respaldo:', err.message);
+        res.status(500).json({ error: 'No se pudo generar el respaldo' });
+    }
 });
 
 // ==========================================

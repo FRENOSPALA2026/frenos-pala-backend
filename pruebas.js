@@ -124,6 +124,8 @@ async function pruebaDuplicados() {
     const mismaPlaca = await pedir('POST', '/turnos', {
         placa: 'ZZZ002', tipo_servicios: ['aceite']
     });
+    // Si por alguna razón sí se creó, hay que recogerlo también
+    if (mismaPlaca.datos?.turno?.id) creados.turnos.push(mismaPlaca.datos.turno.id);
     verificar('Una placa que ya está en el taller se rechaza',
         mismaPlaca.estado === 409,
         `Esperado 409, recibido ${mismaPlaca.estado}`);
@@ -201,6 +203,11 @@ async function pruebaCancelacion() {
 async function pruebaMecanicoOcupado() {
     console.log('\n▶ Reglas del personal');
 
+    // Barremos los vehículos de prueba que dejaron las secciones anteriores:
+    // si quedan carros esperando, el motor se los asigna a nuestro mecánico
+    // en cuanto lo liberemos y la prueba mediría otra cosa.
+    await limpiarRastrosTurnos();
+
     const m = await pedir('POST', '/mecanicos', {
         nombre: 'ZZZ Prueba Ocupado', sabe_frenos: true
     });
@@ -228,9 +235,22 @@ async function pruebaMecanicoOcupado() {
         const liberar = await pedir('PUT', `/mecanicos/${id}/liberar`);
         verificar('Se puede liberar al mecánico', liberar.estado === 200);
 
-        const otraVez = await pedir('PUT', `/mecanicos/${id}/liberar`);
-        verificar('No se puede liberar dos veces al mismo mecánico',
-            otraVez.estado === 400);
+        // Al liberarlo, el motor puede asignarle DE INMEDIATO otro carro que
+        // estuviera esperando — eso es lo correcto, no un error. Así que
+        // primero lo dejamos sin trabajo, y solo entonces comprobamos que
+        // liberar a alguien desocupado sí se rechaza.
+        let intentos = 0;
+        let ultimoEstado = 200;
+        while (ultimoEstado === 200 && intentos < 6) {
+            await esperar(400);
+            const otro = await pedir('PUT', `/mecanicos/${id}/liberar`);
+            ultimoEstado = otro.estado;
+            intentos++;
+        }
+
+        verificar('Liberar a un mecánico que no está atendiendo se rechaza',
+            ultimoEstado === 400,
+            `Después de ${intentos} intentos seguía devolviendo ${ultimoEstado}`);
     } else {
         console.log('  ⏭️  Se omite: el vehículo de prueba no llegó a asignarse');
     }
@@ -255,16 +275,63 @@ async function pruebaTiempoActivo() {
         mecanicos.every(m => m.segundos_activo >= 0));
 }
 
+// Borra TODO lo que tenga pinta de dato de prueba (placas y nombres que
+// empiezan por ZZZ), sin depender de los identificadores que fuimos
+// guardando. Así, aunque una prueba falle a mitad de camino, no queda
+// basura en la base de datos del taller.
+// Cancela solo los VEHÍCULOS de prueba, dejando los mecánicos en pie
+async function limpiarRastrosTurnos() {
+    const espera = await pedir('GET', '/turnos/en-espera');
+    const proceso = await pedir('GET', '/turnos/en-proceso');
+
+    const dePrueba = [...(espera.datos || []), ...(proceso.datos || [])]
+        .filter(t => String(t.placa || '').startsWith('ZZZ'));
+
+    for (const t of dePrueba) {
+        await pedir('PUT', `/turnos/${t.id}/cancelar`,
+            { motivo: 'Limpieza entre pruebas' });
+    }
+}
+
+async function limpiarRastros(silencioso = false) {
+    let turnosBorrados = 0, mecanicosBorrados = 0;
+
+    // Dos pasadas: al eliminar un mecánico ocupado, su vehículo vuelve
+    // a la fila, así que hay que volver a recogerlo.
+    for (let pasada = 0; pasada < 2; pasada++) {
+        const espera = await pedir('GET', '/turnos/en-espera');
+        const proceso = await pedir('GET', '/turnos/en-proceso');
+
+        const dePrueba = [...(espera.datos || []), ...(proceso.datos || [])]
+            .filter(t => String(t.placa || '').startsWith('ZZZ'));
+
+        for (const t of dePrueba) {
+            const r = await pedir('PUT', `/turnos/${t.id}/cancelar`,
+                { motivo: 'Limpieza de pruebas automatizadas' });
+            if (r.estado === 200) turnosBorrados++;
+        }
+
+        if (pasada === 0) {
+            const mecanicos = await pedir('GET', '/mecanicos/todos');
+            const prueba = (mecanicos.datos || [])
+                .filter(m => String(m.nombre || '').startsWith('ZZZ'));
+
+            for (const m of prueba) {
+                const r = await pedir('DELETE', `/mecanicos/${m.id}`);
+                if (r.estado === 200) mecanicosBorrados++;
+            }
+        }
+    }
+
+    if (!silencioso) {
+        console.log(`  🧹 ${turnosBorrados} vehículos y ${mecanicosBorrados} mecánicos de prueba`);
+    }
+    return { turnosBorrados, mecanicosBorrados };
+}
+
 async function limpiar() {
     console.log('\n▶ Limpiando datos de prueba');
-
-    for (const id of creados.turnos) {
-        await pedir('PUT', `/turnos/${id}/cancelar`, { motivo: 'Limpieza de pruebas' });
-    }
-    for (const id of creados.mecanicos) {
-        await pedir('DELETE', `/mecanicos/${id}`);
-    }
-    console.log(`  🧹 ${creados.turnos.length} vehículos y ${creados.mecanicos.length} mecánicos de prueba`);
+    await limpiarRastros();
 }
 
 // ==========================================
@@ -276,6 +343,15 @@ async function limpiar() {
 
     try {
         await pruebaServidorVivo();
+
+        // Antes de nada, barremos lo que haya quedado de corridas anteriores.
+        // Sin esto, un residuo hace fallar pruebas que en realidad están bien.
+        const previo = await limpiarRastros(true);
+        if (previo.turnosBorrados > 0 || previo.mecanicosBorrados > 0) {
+            console.log(`\n  ℹ️  Se limpiaron residuos de una corrida anterior: ` +
+                `${previo.turnosBorrados} vehículos, ${previo.mecanicosBorrados} mecánicos`);
+        }
+
         await pruebaZonaHoraria();
         await pruebaHabilidades();
         await pruebaDuplicados();
