@@ -1,11 +1,12 @@
 {
   "name": "frenos-pala-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Sistema de gestion de turnos y asignacion de vehiculos para Frenos Pala",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "node app.js",
+    "test": "node pruebas.js"
   },
   "keywords": [],
   "author": "",

@@ -38,10 +38,27 @@ app.use(express.static(path.join(__dirname, 'public')));
 // romper nada mientras se configura.
 const API_TOKEN = process.env.API_TOKEN;
 
+// Consultas que SÍ requieren clave aunque sean de lectura, porque exponen
+// información sensible: el historial completo de placas del taller y el
+// registro de quién hizo cada cosa. La TV no las necesita.
+const LECTURAS_PROTEGIDAS = [
+    '/turnos/buscar'   // permite listar todas las placas del taller
+    // (las rutas /api/auditoria* se cubren aparte, más abajo)
+];
+
+function esLecturaProtegida(ruta) {
+    // /turnos/en-espera y /turnos/en-proceso siguen abiertas porque son las
+    // que alimentan la TV y la pantalla de clientes de la sala de espera.
+    if (ruta.startsWith('/api/auditoria')) return true;
+    return LECTURAS_PROTEGIDAS.includes(ruta);
+}
+
 app.use((req, res, next) => {
-    if (!API_TOKEN) return next();                 // protección desactivada
-    if (req.method === 'GET') return next();       // leer es libre
+    if (!API_TOKEN) return next();            // protección desactivada
     if (req.path === '/ping') return next();
+
+    const necesitaClave = req.method !== 'GET' || esLecturaProtegida(req.path);
+    if (!necesitaClave) return next();
 
     if (req.headers['x-api-token'] !== API_TOKEN) {
         return res.status(401).json({
@@ -77,15 +94,16 @@ io.on('connection', (socket) => {
 // la semana, el mes o el año.
 
 async function abrirSesion(mecanicoId) {
-    // Si ya tiene una abierta no hacemos nada, para no duplicar tramos
-    const abierta = await pool.query(
-        'SELECT 1 FROM sesiones_mecanico WHERE mecanico_id = $1 AND fin IS NULL LIMIT 1',
-        [mecanicoId]
-    );
-    if (abierta.rows.length > 0) return;
-
+    // Una sola instrucción: consultar e insertar por separado dejaba una
+    // rendija por la que dos peticiones seguidas podían abrir dos sesiones
+    // al mismo mecánico y duplicarle las horas en el informe.
     await pool.query(
-        'INSERT INTO sesiones_mecanico (mecanico_id, inicio) VALUES ($1, CURRENT_TIMESTAMP)',
+        `INSERT INTO sesiones_mecanico (mecanico_id, inicio)
+         SELECT $1, CURRENT_TIMESTAMP
+         WHERE NOT EXISTS (
+             SELECT 1 FROM sesiones_mecanico
+             WHERE mecanico_id = $1 AND fin IS NULL
+         )`,
         [mecanicoId]
     );
 }
@@ -484,6 +502,18 @@ app.get('/turnos/buscar', async (req, res, next) => {
 async function finalizarTurnoPorId(id) {
     const actual = await pool.query('SELECT * FROM turnos WHERE id = $1', [id]);
     if (actual.rows.length === 0) return null;
+
+    // Un turno solo se puede entregar si de verdad se está atendiendo.
+    // Sin esta validación se podía "finalizar" algo ya entregado o
+    // cancelado, lo que ensuciaba las horas y los informes.
+    const estado = actual.rows[0].estado_turno;
+    if (estado !== 'EN_PROCESO') {
+        const explicacion = estado === 'FINALIZADO' ? 'ya fue entregado'
+                          : estado === 'CANCELADO'  ? 'fue cancelado'
+                          : 'todavía no ha sido asignado a ningún mecánico';
+        return { error: `Este vehículo ${explicacion}.` };
+    }
+
     const mecanico_id = actual.rows[0].mecanico_id;
 
     const finalizado = await pool.query(
@@ -510,6 +540,7 @@ app.put('/turnos/:id/finalizar', async (req, res, next) => {
     try {
         const resultado = await finalizarTurnoPorId(req.params.id);
         if (!resultado) return res.status(404).json({ error: 'Turno no encontrado' });
+        if (resultado.error) return res.status(400).json({ error: resultado.error });
         res.json({ mensaje: 'Turno finalizado', ...resultado });
     } catch (err) { next(err); }
 });
@@ -525,6 +556,7 @@ app.put('/mecanicos/:id/liberar', async (req, res, next) => {
             return res.status(400).json({ error: 'Este mecánico no tiene ningún turno en proceso' });
         }
         const resultado = await finalizarTurnoPorId(activo.rows[0].id);
+        if (resultado.error) return res.status(400).json({ error: resultado.error });
 
         await registrar({
             accion: 'LIBERAR',
@@ -666,17 +698,33 @@ app.get('/api/auditoria', async (req, res, next) => {
         const condiciones = [];
         const valores = [];
         let i = 1;
-        if (placa) { condiciones.push(`placa ILIKE $${i++}`); valores.push(`%${placa}%`); }
-        if (accion) { condiciones.push(`accion = $${i++}`); valores.push(accion); }
+        if (placa) { condiciones.push(`a.placa ILIKE $${i++}`); valores.push(`%${placa}%`); }
+        if (accion) { condiciones.push(`a.accion = $${i++}`); valores.push(accion); }
 
         const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
         valores.push(limite);
 
+        // Traemos también el nombre del mecánico, para no tener que mostrar
+        // un número de identificación en pantalla.
         const r = await pool.query(
-            `SELECT * FROM auditoria ${where} ORDER BY fecha DESC LIMIT $${i}`,
+            `SELECT a.*, m.nombre AS mecanico_nombre
+             FROM auditoria a
+             LEFT JOIN mecanicos m ON m.id = a.mecanico_id
+             ${where}
+             ORDER BY a.fecha DESC LIMIT $${i}`,
             valores
         );
         res.json(r.rows);
+    } catch (err) { next(err); }
+});
+
+// Lista de acciones existentes, para poblar el filtro en la app
+app.get('/api/auditoria/acciones', async (req, res, next) => {
+    try {
+        const r = await pool.query(
+            'SELECT DISTINCT accion FROM auditoria ORDER BY accion'
+        );
+        res.json(r.rows.map(f => f.accion));
     } catch (err) { next(err); }
 });
 
@@ -854,10 +902,20 @@ if (URL_PROPIA) {
     console.log(`💓 Auto-ping activado hacia ${URL_PROPIA}`);
 }
 
-// Manejo centralizado de errores
+// Ruta no encontrada
+app.use((req, res) => {
+    res.status(404).json({ error: 'Ruta no encontrada' });
+});
+
+// Manejo centralizado de errores.
+// El detalle técnico se escribe en los logs de Render (donde solo tú lo ves),
+// nunca se le devuelve al cliente: podría revelar nombres de tablas o parte
+// de las consultas, que es información útil para alguien malintencionado.
 app.use((err, req, res, next) => {
-    console.error('❌ Error:', err.stack);
-    res.status(500).json({ error: 'Error interno del servidor', detalle: err.message });
+    console.error(`❌ Error en ${req.method} ${req.path}:`, err.stack);
+    res.status(500).json({
+        error: 'Ocurrió un error en el servidor. Intenta de nuevo en un momento.'
+    });
 });
 
 // Render asigna el puerto por variable de entorno — si lo dejas fijo en 3000, no arranca

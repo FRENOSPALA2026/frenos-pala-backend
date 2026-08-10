@@ -1,3 +1,15 @@
+# Dependencias (se reinstalan con npm install)
 node_modules/
+
+# Credenciales: NUNCA deben subirse a GitHub
 .env
+.env.local
+
+# Registros y temporales
 *.log
+.DS_Store
+Thumbs.db
+
+# Configuración de editores
+.vscode/
+.idea/

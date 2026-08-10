@@ -67,11 +67,18 @@ async function asignarSiguienteTurno(mecanicoId) {
 
         // ---- 1. FILA OCULTA VIP ----
         // El cliente pidió expresamente a este mecánico, así que va primero.
+        //
+        // Aun siendo preferencial se exige que sepa hacer TODOS los servicios
+        // (<@). Si no, el carro quedaría asignado a alguien que no puede
+        // terminarlo, y se atascaría ahí para siempre. Prefiero que espere
+        // en la fila oculta hasta que se corrijan sus habilidades.
         let r = await client.query(
             `SELECT * FROM turnos
-             WHERE estado_turno = 'EN_ESPERA' AND es_vip = TRUE AND mecanico_preferido_id = $1
+             WHERE estado_turno = 'EN_ESPERA' AND es_vip = TRUE
+               AND mecanico_preferido_id = $1
+               AND tipo_servicios <@ $2::text[]
              ORDER BY hora_llegada ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
-            [mecanicoId]
+            [mecanicoId, habilidades]
         );
         turno = r.rows[0];
 
@@ -156,8 +163,26 @@ async function asignarSiguienteTurno(mecanicoId) {
 }
 
 async function intentarAsignarDisponibles() {
+    // Si no hay nadie esperando, no tiene sentido recorrer a todo el personal.
+    const hayEspera = await pool.query(
+        `SELECT 1 FROM turnos WHERE estado_turno = 'EN_ESPERA' LIMIT 1`
+    );
+    if (hayEspera.rows.length === 0) return [];
+
+    // ⚖️ EL ORDEN ES LO QUE HACE JUSTO AL SISTEMA.
+    //
+    // Cuando hay varios mecánicos libres, el carro debe ser para el que
+    // lleva MÁS tiempo esperando, no para cualquiera. Sin este ORDER BY,
+    // PostgreSQL devuelve los mecánicos en el orden que le convenga (que
+    // suele ser estable), así que siempre recibirían trabajo los mismos
+    // — exactamente el desequilibrio que este sistema vino a eliminar.
+    //
+    // NULLS FIRST: si alguien no tiene marca de tiempo (caso raro), se
+    // atiende primero en vez de dejarlo al final indefinidamente.
     const { rows: libres } = await pool.query(
-        `SELECT id FROM mecanicos WHERE estado_asistencia = 'ACTIVO' AND estado_trabajo = 'DISPONIBLE'`
+        `SELECT id FROM mecanicos
+         WHERE estado_asistencia = 'ACTIVO' AND estado_trabajo = 'DISPONIBLE'
+         ORDER BY disponible_desde ASC NULLS FIRST, id ASC`
     );
 
     const asignados = [];
