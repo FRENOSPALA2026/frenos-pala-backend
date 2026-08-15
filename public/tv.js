@@ -258,7 +258,10 @@ function pintarMecanicos() {
                 const servicio = textoServicios(m.tipo_servicios);
                 const demorado = minutosDesde(m.hora_inicio) >= MINUTOS_ATENCION;
                 if (demorado) li.className += ' demorado';
-                infoDetalle = `<div class="vehiculo-asignado">🚗 <strong>${m.placa_actual}</strong> (${servicio})</div>`;
+                const etiquetaGarantia = m.es_garantia
+                    ? ` <span style="background:#C24141;color:#fff;padding:2px 7px;border-radius:4px;font-size:.75em;font-weight:700;letter-spacing:.5px;">GARANTÍA</span>`
+                    : '';
+                infoDetalle = `<div class="vehiculo-asignado">🚗 <strong>${m.placa_actual}</strong> (${servicio})${etiquetaGarantia}</div>`;
                 derechaHtml = `
                     <div style="text-align:right; font-family:monospace;">
                         <span class="badge-estado ${demorado ? 'badge-demorado' : 'badge-ocupado'}" style="display:inline-block; margin-bottom:4px;">${demorado ? 'Demorado' : 'Ocupado'}</span><br>
@@ -340,6 +343,9 @@ function crearTarjetaTurno(t, etiqueta, color, claseExtra) {
     if (demorado) color = '#fb923c';
 
     const servicio = textoServicios(t.tipo_servicios);
+    const textoGarantia = t.es_garantia
+        ? `<span style="background:#C24141;color:#fff;padding:2px 7px;border-radius:4px;font-size:.75em;font-weight:700;margin-left:6px;">GARANTÍA${t.nombre_mecanico_responsable ? ' · trabajo de ' + t.nombre_mecanico_responsable : ''}</span>`
+        : '';
     const textoVip = t.es_vip && t.nombre_mecanico_preferido
         ? `<span style="color:#fbbf24; font-weight:600; margin-left:6px;">(⭐ Con ${t.nombre_mecanico_preferido})</span>`
         : (t.es_vip ? '<span style="color:#fbbf24; font-weight:600; margin-left:6px;">⭐ VIP</span>' : '');
@@ -347,7 +353,7 @@ function crearTarjetaTurno(t, etiqueta, color, claseExtra) {
     li.innerHTML = `
         <div>
             <div class="item-titulo">${t.placa}</div>
-            <div class="item-sub">Servicio: ${servicio} ${textoVip}</div>
+            <div class="item-sub">Servicio: ${servicio} ${textoVip}${textoGarantia}</div>
         </div>
         <div style="font-size:0.9rem; color:${color}; text-align:right; font-family:monospace;">
             ${etiqueta} <br>

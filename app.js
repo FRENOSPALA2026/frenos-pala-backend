@@ -126,7 +126,7 @@ app.get('/mecanicos', async (req, res, next) => {
     try {
         const r = await pool.query(`
             SELECT m.*, t.id AS turno_actual_id, t.placa AS placa_actual,
-                   t.tipo_servicios, t.hora_inicio
+                   t.tipo_servicios, t.hora_inicio, t.es_garantia, t.nombre_mecanico_responsable, t.es_vip
             FROM mecanicos m
             LEFT JOIN turnos t ON m.id = t.mecanico_id AND t.estado_turno = 'EN_PROCESO'
             WHERE m.estado_asistencia = 'ACTIVO'
@@ -141,7 +141,7 @@ app.get('/mecanicos/todos', async (req, res, next) => {
     try {
         const r = await pool.query(`
             SELECT m.*, t.id AS turno_actual_id, t.placa AS placa_actual,
-                   t.tipo_servicios, t.hora_inicio
+                   t.tipo_servicios, t.hora_inicio, t.es_garantia, t.nombre_mecanico_responsable, t.es_vip
             FROM mecanicos m
             LEFT JOIN turnos t ON m.id = t.mecanico_id AND t.estado_turno = 'EN_PROCESO'
             ORDER BY m.nombre
@@ -360,7 +360,9 @@ app.post('/turnos', async (req, res, next) => {
     try {
         const { placa, tipo_servicios, tipo_servicio, es_vip,
                 mecanico_preferido_id, nombre_mecanico_preferido,
-                hora_llegada, clave_unica } = req.body;
+                hora_llegada, clave_unica,
+                es_garantia, mecanico_responsable_id,
+                nombre_mecanico_responsable } = req.body;
 
         // Aceptamos tanto la lista nueva (tipo_servicios) como el formato
         // viejo de un solo servicio (tipo_servicio), por compatibilidad.
@@ -382,6 +384,15 @@ app.post('/turnos', async (req, res, next) => {
 
         if (es_vip && !mecanico_preferido_id) {
             return res.status(400).json({ error: 'Un turno VIP necesita mecanico_preferido_id' });
+        }
+
+        // De la garantía solo se pide saber quién hizo el trabajo anterior.
+        // La causa (repuesto o trabajo mal hecho) se pregunta al final,
+        // porque al llegar el carro todavía no se sabe por qué falló.
+        if (es_garantia && !mecanico_responsable_id) {
+            return res.status(400).json({
+                error: 'Indica qué mecánico hizo el trabajo anterior'
+            });
         }
 
         const placaLimpia = String(placa).toUpperCase().trim();
@@ -439,26 +450,39 @@ app.post('/turnos', async (req, res, next) => {
             }
         }
 
+        // La garantía y el turno preferencial son independientes: un carro
+        // puede venir por garantía Y además mandarse a un mecánico concreto.
         const r = await pool.query(
             `INSERT INTO turnos (placa, tipo_servicios, es_vip, mecanico_preferido_id,
-                                 nombre_mecanico_preferido, hora_llegada, clave_unica)
+                                 nombre_mecanico_preferido, hora_llegada, clave_unica,
+                                 es_garantia, mecanico_responsable_id,
+                                 nombre_mecanico_responsable)
              VALUES ($1, $2::text[], $3, $4, $5,
-                     COALESCE($6::timestamp, CURRENT_TIMESTAMP), $7)
+                     COALESCE($6::timestamp, CURRENT_TIMESTAMP), $7, $8, $9, $10)
              RETURNING *`,
             [placaLimpia, servicios, !!es_vip,
              es_vip ? mecanico_preferido_id : null,
              es_vip ? nombre_mecanico_preferido : null,
-             llegada, clave_unica || null]
+             llegada, clave_unica || null,
+             !!es_garantia,
+             es_garantia ? mecanico_responsable_id : null,
+             es_garantia ? nombre_mecanico_responsable : null]
         );
         const turno = r.rows[0];
 
         await registrar({
             accion: 'INGRESO',
-            detalle: `Ingresó ${placa} (${servicios.join(', ')})${es_vip ? ' — PREFERENCIAL' : ''}`,
+            detalle: `Ingresó ${placaLimpia} (${servicios.join(', ')})` +
+                     (es_garantia
+                        ? ` — GARANTÍA de trabajo de ${nombre_mecanico_responsable || 'mecánico sin nombre'}`
+                        : '') +
+                     (es_vip ? ' — PREFERENCIAL' : ''),
             usuario: usuarioDe(req),
             placa,
             turnoId: turno.id,
-            datos: { servicios, es_vip: !!es_vip, mecanico_preferido_id: mecanico_preferido_id || null }
+            datos: { servicios, es_vip: !!es_vip, es_garantia: !!es_garantia,
+                     mecanico_responsable_id: es_garantia ? mecanico_responsable_id : null,
+                     mecanico_preferido_id: es_vip ? mecanico_preferido_id : null }
         });
 
         // Si hay algún mecánico libre compatible, se le asigna de inmediato
@@ -507,7 +531,7 @@ app.get('/turnos/buscar', async (req, res, next) => {
 });
 
 // Finaliza un turno, libera al mecánico y le asigna el siguiente carro
-async function finalizarTurnoPorId(id) {
+async function finalizarTurnoPorId(id, garantiaCobrada, tipoGarantia) {
     const actual = await pool.query('SELECT * FROM turnos WHERE id = $1', [id]);
     if (actual.rows.length === 0) return null;
 
@@ -522,33 +546,102 @@ async function finalizarTurnoPorId(id) {
         return { error: `Este vehículo ${explicacion}.` };
     }
 
-    const mecanico_id = actual.rows[0].mecanico_id;
+    const turno = actual.rows[0];
+    const mecanico_id = turno.mecanico_id;
+
+    // De una garantía hacen falta dos datos antes de poder cerrarla:
+    //   · La causa -> define a quién se le cuenta en los informes
+    //   · Si se cobró -> define dónde queda el mecánico en la fila
+    if (turno.es_garantia) {
+        const faltaCobro = typeof garantiaCobrada !== 'boolean';
+        const faltaCausa = !['REPUESTO', 'MECANICO'].includes(tipoGarantia);
+        if (faltaCobro || faltaCausa) {
+            return { requiereGarantia: true, turno };
+        }
+    }
 
     const finalizado = await pool.query(
-        `UPDATE turnos SET estado_turno = 'FINALIZADO', hora_fin = CURRENT_TIMESTAMP
+        `UPDATE turnos
+         SET estado_turno = 'FINALIZADO', hora_fin = CURRENT_TIMESTAMP,
+             garantia_cobrada = $2, tipo_garantia = $3
          WHERE id = $1 RETURNING *`,
-        [id]
+        [id,
+         turno.es_garantia ? garantiaCobrada : null,
+         turno.es_garantia ? tipoGarantia : null]
     );
 
     let siguiente = { asignado: false };
+    let devolvioPuesto = false;
+
     if (mecanico_id) {
-        await pool.query(
-            `UPDATE mecanicos SET estado_trabajo = 'DISPONIBLE', disponible_desde = CURRENT_TIMESTAMP WHERE id = $1`,
-            [mecanico_id]
-        );
+        // REGLA DE LA FILA AL TERMINAR:
+        //
+        //   · Trabajo normal, o garantía que SÍ se cobró
+        //     -> vuelve al final de la fila, como cualquiera que acaba de
+        //        trabajar y ganar.
+        //
+        //   · Garantía que NO se cobró
+        //     -> se le devuelve la marca de espera que traía antes de que le
+        //        asignaran la garantía. Su tiempo sigue corriendo como si
+        //        nunca hubiera parado, así que no pierde el turno por un
+        //        trabajo que no le generó ingreso.
+        const noCobro = turno.es_garantia && garantiaCobrada === false;
+        const marcaPrevia = turno.espera_previa_mecanico;
+
+        if (noCobro && marcaPrevia) {
+            await pool.query(
+                `UPDATE mecanicos
+                 SET estado_trabajo = 'DISPONIBLE', disponible_desde = $2
+                 WHERE id = $1`,
+                [mecanico_id, marcaPrevia]
+            );
+            devolvioPuesto = true;
+        } else if (noCobro) {
+            // Sin marca previa (caso raro): al menos no le contamos el tiempo
+            // que estuvo en la garantía, contando desde que la empezó.
+            await pool.query(
+                `UPDATE mecanicos
+                 SET estado_trabajo = 'DISPONIBLE',
+                     disponible_desde = COALESCE($2, CURRENT_TIMESTAMP)
+                 WHERE id = $1`,
+                [mecanico_id, turno.hora_inicio]
+            );
+            devolvioPuesto = true;
+        } else {
+            await pool.query(
+                `UPDATE mecanicos SET estado_trabajo = 'DISPONIBLE',
+                                      disponible_desde = CURRENT_TIMESTAMP
+                 WHERE id = $1`,
+                [mecanico_id]
+            );
+        }
+
         siguiente = await asignarSiguienteTurno(mecanico_id);
     }
 
     avisarCambio();
     avisarNuevaAsignacion(siguiente);
-    return { turno: finalizado.rows[0], siguiente_turno: siguiente };
+    return {
+        turno: finalizado.rows[0],
+        siguiente_turno: siguiente,
+        devolvio_puesto: devolvioPuesto
+    };
 }
 
 app.put('/turnos/:id/finalizar', async (req, res, next) => {
     try {
-        const resultado = await finalizarTurnoPorId(req.params.id);
+        const { garantia_cobrada, tipo_garantia } = req.body || {};
+        const resultado = await finalizarTurnoPorId(
+            req.params.id, garantia_cobrada, tipo_garantia);
         if (!resultado) return res.status(404).json({ error: 'Turno no encontrado' });
         if (resultado.error) return res.status(400).json({ error: resultado.error });
+        if (resultado.requiereGarantia) {
+            return res.status(409).json({
+                requiere_garantia: true,
+                placa: resultado.turno.placa,
+                error: 'Falta indicar la causa de la garantía y si se cobró'
+            });
+        }
         res.json({ mensaje: 'Turno finalizado', ...resultado });
     } catch (err) { next(err); }
 });
@@ -563,16 +656,43 @@ app.put('/mecanicos/:id/liberar', async (req, res, next) => {
         if (activo.rows.length === 0) {
             return res.status(400).json({ error: 'Este mecánico no tiene ningún turno en proceso' });
         }
-        const resultado = await finalizarTurnoPorId(activo.rows[0].id);
+        const { garantia_cobrada, tipo_garantia } = req.body || {};
+        const resultado = await finalizarTurnoPorId(
+            activo.rows[0].id, garantia_cobrada, tipo_garantia);
         if (resultado.error) return res.status(400).json({ error: resultado.error });
+
+        // Es una garantía y todavía no sabemos si se cobró: la app tiene que
+        // preguntarlo antes de que podamos cerrar el turno.
+        if (resultado.requiereGarantia) {
+            return res.status(409).json({
+                requiere_garantia: true,
+                placa: resultado.turno.placa,
+                nombre_mecanico_responsable: resultado.turno.nombre_mecanico_responsable,
+                error: 'Falta indicar la causa de la garantía y si se cobró'
+            });
+        }
+
+        const t = resultado.turno;
+        const detalleGarantia = t.es_garantia
+            ? ` — GARANTÍA por ${t.tipo_garantia === 'REPUESTO' ? 'falla del repuesto' : 'trabajo de ' + (t.nombre_mecanico_responsable || 'otro mecánico')}` +
+              `, ${t.garantia_cobrada ? 'COBRADA' : 'NO COBRADA'}` +
+              (resultado.devolvio_puesto ? ', se le devolvió el puesto en la fila' : '')
+            : '';
 
         await registrar({
             accion: 'LIBERAR',
-            detalle: `Se entregó ${resultado.turno.placa}`,
+            detalle: `Se entregó ${t.placa}${detalleGarantia}`,
             usuario: usuarioDe(req),
-            placa: resultado.turno.placa,
+            placa: t.placa,
             mecanicoId: Number(req.params.id),
-            turnoId: resultado.turno.id
+            turnoId: t.id,
+            datos: t.es_garantia
+                ? { garantia: true, tipo: t.tipo_garantia,
+                    cobrada: t.garantia_cobrada,
+                    responsable_id: t.mecanico_responsable_id,
+                    atendio_id: Number(req.params.id),
+                    devolvio_puesto: resultado.devolvio_puesto }
+                : null
         });
 
         res.json({ mensaje: 'Turno finalizado', ...resultado });
@@ -974,6 +1094,95 @@ app.get('/api/respaldo/descargar', async (req, res) => {
         console.error('❌ No se pudo generar el respaldo:', err.message);
         res.status(500).json({ error: 'No se pudo generar el respaldo' });
     }
+});
+
+// Resumen de garantías del periodo.
+//
+// A QUIÉN SE LE CUENTA CADA GARANTÍA:
+//   · Falla del MECÁNICO -> al que hizo el trabajo que quedó mal, no al que
+//                            atendió la garantía. Él fue el responsable.
+//   · Falla del REPUESTO -> al que atendió la garantía. Nadie tuvo la culpa
+//                            (falló la pieza), así que se registra como
+//                            trabajo hecho por quien lo resolvió.
+app.get('/api/informes/garantias', async (req, res, next) => {
+    try {
+        const { filtroTiempo, fechaEspecifica } = req.query;
+
+        const fechaLocal = `(hora_llegada AT TIME ZONE 'UTC' AT TIME ZONE '${ZONA}')`;
+        const hoyLocal = `(CURRENT_TIMESTAMP AT TIME ZONE '${ZONA}')::date`;
+
+        let filtro = '';
+        const valores = [];
+        if (filtroTiempo === 'hoy') {
+            filtro = ` AND ${fechaLocal}::date = ${hoyLocal}`;
+        } else if (filtroTiempo === 'semana') {
+            filtro = ` AND ${fechaLocal}::date >= date_trunc('week', ${hoyLocal})::date`;
+        } else if (filtroTiempo === 'mes') {
+            filtro = ` AND ${fechaLocal}::date >= date_trunc('month', ${hoyLocal})::date`;
+        } else if (filtroTiempo === 'ano') {
+            filtro = ` AND ${fechaLocal}::date >= date_trunc('year', ${hoyLocal})::date`;
+        } else if (filtroTiempo === 'especifica' && fechaEspecifica) {
+            filtro = ` AND ${fechaLocal}::date = $1::date`;
+            valores.push(fechaEspecifica);
+        }
+
+        const totales = await pool.query(`
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE tipo_garantia = 'REPUESTO') AS por_repuesto,
+                   COUNT(*) FILTER (WHERE tipo_garantia = 'MECANICO') AS por_mecanico,
+                   COUNT(*) FILTER (WHERE tipo_garantia IS NULL)     AS sin_definir,
+                   COUNT(*) FILTER (WHERE garantia_cobrada = TRUE)   AS cobradas,
+                   COUNT(*) FILTER (WHERE garantia_cobrada = FALSE)  AS no_cobradas
+            FROM turnos
+            WHERE es_garantia = TRUE AND estado_turno <> 'CANCELADO'${filtro}`,
+            valores);
+
+        // Se unen las dos atribuciones en una sola lista por mecánico
+        const porMecanico = await pool.query(`
+            WITH atribuidas AS (
+                -- Falla del mecánico: se le cuenta al responsable del trabajo
+                SELECT mecanico_responsable_id AS mecanico_id, 'MECANICO' AS tipo
+                FROM turnos
+                WHERE es_garantia = TRUE AND tipo_garantia = 'MECANICO'
+                  AND estado_turno <> 'CANCELADO'
+                  AND mecanico_responsable_id IS NOT NULL${filtro}
+
+                UNION ALL
+
+                -- Falla del repuesto: se le cuenta a quien la atendió
+                SELECT mecanico_id, 'REPUESTO' AS tipo
+                FROM turnos
+                WHERE es_garantia = TRUE AND tipo_garantia = 'REPUESTO'
+                  AND estado_turno <> 'CANCELADO'
+                  AND mecanico_id IS NOT NULL${filtro}
+            )
+            SELECT m.id, m.nombre,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE a.tipo = 'MECANICO') AS por_su_trabajo,
+                   COUNT(*) FILTER (WHERE a.tipo = 'REPUESTO') AS por_repuesto
+            FROM atribuidas a
+            JOIN mecanicos m ON m.id = a.mecanico_id
+            GROUP BY m.id, m.nombre
+            ORDER BY COUNT(*) FILTER (WHERE a.tipo = 'MECANICO') DESC, COUNT(*) DESC`,
+            valores);
+
+        const t = totales.rows[0];
+        res.json({
+            total: Number(t.total),
+            por_repuesto: Number(t.por_repuesto),
+            por_mecanico: Number(t.por_mecanico),
+            sin_definir: Number(t.sin_definir),
+            cobradas: Number(t.cobradas),
+            no_cobradas: Number(t.no_cobradas),
+            porMecanico: porMecanico.rows.map(f => ({
+                id: f.id,
+                nombre: f.nombre,
+                total: Number(f.total),
+                por_su_trabajo: Number(f.por_su_trabajo),
+                por_repuesto: Number(f.por_repuesto)
+            }))
+        });
+    } catch (err) { next(err); }
 });
 
 // ==========================================

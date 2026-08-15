@@ -65,8 +65,13 @@ async function asignarSiguienteTurno(mecanicoId) {
 
         let turno = null;
 
-        // ---- 1. FILA OCULTA VIP ----
-        // El cliente pidió expresamente a este mecánico, así que va primero.
+        // ---- 1. FILA OCULTA: CLIENTES PREFERENCIALES ----
+        // El cliente fijo pidió expresamente a este mecánico.
+        //
+        // Las garantías NO entran aquí: como no se sabe de antemano si el
+        // mecánico responsable está en el taller, van a la fila normal y les
+        // toca al siguiente disponible. Si el responsable sí está, el turnero
+        // marca además "turno preferencial" y así se lo manda a él.
         //
         // Aun siendo preferencial se exige que sepa hacer TODOS los servicios
         // (<@). Si no, el carro quedaría asignado a alguien que no puede
@@ -129,6 +134,16 @@ async function asignarSiguienteTurno(mecanicoId) {
             [mecanicoId, turno.id]
         );
 
+        // Si es garantía, guardamos la marca de espera que traía el mecánico.
+        // Si al final no cobra, se la devolvemos para que no pierda el turno
+        // por un trabajo que no le generó ingreso.
+        if (turnoRows[0].es_garantia) {
+            await client.query(
+                `UPDATE turnos SET espera_previa_mecanico = $1 WHERE id = $2`,
+                [mecanico.disponible_desde, turnoRows[0].id]
+            );
+        }
+
         // Al quedar ocupado ya no está esperando: limpiamos disponible_desde
         await client.query(
             `UPDATE mecanicos SET estado_trabajo = 'OCUPADO', disponible_desde = NULL WHERE id = $1`,
@@ -139,7 +154,11 @@ async function asignarSiguienteTurno(mecanicoId) {
 
         // Dejamos constancia de por qué este carro fue para este mecánico.
         // Es la evidencia que permite responder si alguien reclama.
-        const via = turnoRows[0].es_vip ? 'turno preferencial'
+        const via = turnoRows[0].es_vip
+                      ? (turnoRows[0].es_garantia
+                          ? 'garantía enviada por turno preferencial'
+                          : 'turno preferencial')
+                  : turnoRows[0].es_garantia ? 'garantía, por orden de la fila'
                   : (turnoRows[0].tipo_servicios || []).some(x => SERVICIOS_FOSA.includes(x))
                       ? 'fila de plataformas'
                       : 'fila general';

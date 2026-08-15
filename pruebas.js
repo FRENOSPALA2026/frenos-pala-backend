@@ -256,6 +256,87 @@ async function pruebaMecanicoOcupado() {
     }
 }
 
+async function pruebaGarantias() {
+    console.log('\n▶ Garantías');
+
+    await limpiarRastrosTurnos();
+
+    const m = await pedir('POST', '/mecanicos', {
+        nombre: 'ZZZ Prueba Garantia', sabe_frenos: true
+    });
+    const id = m.datos?.id;
+    if (id) creados.mecanicos.push(id);
+    verificar('Se crea el mecánico de la prueba', m.estado === 200);
+    if (!id) return;
+
+    // Sin decir quién hizo el trabajo anterior, debe rechazarse
+    const sinResponsable = await pedir('POST', '/turnos', {
+        placa: 'ZZZ100', tipo_servicios: ['frenos'], es_garantia: true
+    });
+    verificar('Una garantía sin mecánico responsable se rechaza',
+        sinResponsable.estado === 400,
+        `Esperado 400, recibido ${sinResponsable.estado}`);
+
+    // Garantía bien formada: NO necesita la causa al registrarse
+    const g = await pedir('POST', '/turnos', {
+        placa: 'ZZZ102', tipo_servicios: ['frenos'],
+        es_garantia: true,
+        mecanico_responsable_id: id,
+        nombre_mecanico_responsable: 'ZZZ Prueba Garantia'
+    });
+    if (g.datos?.turno?.id) creados.turnos.push(g.datos.turno.id);
+    verificar('Se registra una garantía sin indicar la causa',
+        g.estado === 200);
+    verificar('Queda marcada como garantía',
+        g.datos?.turno?.es_garantia === true);
+    verificar('La causa queda pendiente hasta el final',
+        g.datos?.turno?.tipo_garantia === null ||
+        g.datos?.turno?.tipo_garantia === undefined,
+        `Recibido: ${JSON.stringify(g.datos?.turno?.tipo_garantia)}`);
+
+    await esperar(700);
+
+    const todos = await pedir('GET', '/mecanicos/todos');
+    const nuestro = (todos.datos || []).find(x => x.id === id);
+
+    if (nuestro?.estado_trabajo === 'OCUPADO') {
+        // Cerrar sin los datos de la garantía debe rechazarse
+        const sinDatos = await pedir('PUT', `/mecanicos/${id}/liberar`);
+        verificar('Al cerrar una garantía se piden causa y cobro',
+            sinDatos.estado === 409 && sinDatos.datos?.requiere_garantia === true,
+            `Esperado 409, recibido ${sinDatos.estado}`);
+
+        // Solo con el cobro, sin la causa, tampoco
+        const soloCobro = await pedir('PUT', `/mecanicos/${id}/liberar`,
+            { garantia_cobrada: false });
+        verificar('Sin la causa no se puede cerrar',
+            soloCobro.estado === 409,
+            `Esperado 409, recibido ${soloCobro.estado}`);
+
+        // Ahora sí, completo y sin cobro
+        const cerrar = await pedir('PUT', `/mecanicos/${id}/liberar`, {
+            garantia_cobrada: false, tipo_garantia: 'MECANICO'
+        });
+        verificar('Se cierra la garantía con causa y cobro',
+            cerrar.estado === 200);
+        verificar('Se le devuelve el puesto en la fila',
+            cerrar.datos?.devolvio_puesto === true,
+            `Recibido: ${JSON.stringify(cerrar.datos?.devolvio_puesto)}`);
+        verificar('Queda registrada la causa',
+            cerrar.datos?.turno?.tipo_garantia === 'MECANICO',
+            `Recibido: ${cerrar.datos?.turno?.tipo_garantia}`);
+    } else {
+        console.log('  ⏭️  Se omite el cierre: la garantía no llegó a asignarse');
+    }
+
+    const inf = await pedir('GET', '/api/informes/garantias?filtroTiempo=hoy');
+    verificar('El informe de garantías responde', inf.estado === 200);
+    verificar('El informe trae el desglose por causa',
+        inf.datos && 'por_repuesto' in inf.datos && 'por_mecanico' in inf.datos);
+    verificar('El informe trae el desglose por mecánico',
+        Array.isArray(inf.datos?.porMecanico));
+}
+
 async function pruebaTiempoActivo() {
     console.log('\n▶ Informe de horas en turno');
 
@@ -358,6 +439,7 @@ async function limpiar() {
         await pruebaValidaciones();
         await pruebaCancelacion();
         await pruebaMecanicoOcupado();
+        await pruebaGarantias();
         await pruebaTiempoActivo();
     } catch (err) {
         console.error('\n⛔ Las pruebas se interrumpieron:', err.message);
